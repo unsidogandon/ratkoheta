@@ -1,4 +1,4 @@
-__version__ = (2, 1, 5)
+__version__ = (2, 2, 0)
 
 # meta developer: @karps_lol
 # meta pic: https://raw.githubusercontent.com/unsidogandon/ratkoheta/main/assets/banner.jpg
@@ -6,6 +6,8 @@ __version__ = (2, 1, 5)
 
 import asyncio
 import aiohttp
+import base64
+import json
 import re
 import uuid
 import inspect
@@ -19,12 +21,13 @@ from .. import loader, utils
 
 
 class RepoIndex:
-    MAX_AGE = 300
+    MAX_AGE = 60
 
     def __init__(self) -> None:
         self.items: List[Dict[str, Any]] = []
         self.session: Optional[aiohttp.ClientSession] = None
         self.repo: str = ""
+        self.github_token: str = ""
         self.loaded_at: float = 0.0
 
     @property
@@ -38,23 +41,44 @@ class RepoIndex:
 
     async def fetch_index(self) -> bool:
         session = await self.connect()
-        try:
-            async with session.get(
-                f"{self.base}/index.json",
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as response:
-                if response.status != 200:
-                    return False
-                data = await response.json(content_type=None)
-            if not isinstance(data, list):
+        data = None
+
+        if self.github_token:
+            try:
+                async with session.get(
+                    f"https://api.github.com/repos/{self.repo}/contents/index.json?ref=main",
+                    headers={
+                        "Authorization": f"Bearer {self.github_token}",
+                        "Accept": "application/vnd.github+json",
+                        "User-Agent": "Rheta",
+                    },
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as response:
+                    if response.status == 200:
+                        payload = await response.json(content_type=None)
+                        data = json.loads(base64.b64decode(payload["content"]).decode("utf-8", "replace"))
+            except Exception:
+                data = None
+
+        if data is None:
+            try:
+                async with session.get(
+                    f"{self.base}/index.json",
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as response:
+                    if response.status != 200:
+                        return False
+                    data = await response.json(content_type=None)
+            except Exception:
                 return False
-            for item in data:
-                item["install"] = f"{self.base}/{item['path']}"
-            self.items = data
-            self.loaded_at = time.time()
-            return True
-        except Exception:
+
+        if not isinstance(data, list):
             return False
+        for item in data:
+            item["install"] = f"{self.base}/{item['path']}"
+        self.items = data
+        self.loaded_at = time.time()
+        return True
 
     async def ensure_fresh(self) -> bool:
         if self.items and time.time() - self.loaded_at < self.MAX_AGE:
@@ -249,6 +273,7 @@ class Rheta(loader.Module):
         "overwrite": "✘ Error, module tried to overwrite built-in module!",
         "dependency": "✘ Dependencies installation error!",
         "docrepo": "GitHub repo with modules, format: user/repo",
+        "docgh": "GitHub PAT (optional) — with it the index is fetched via API without CDN cache delay.",
         "doctheme": "Theme for emojis.",
         "install_via_repo": "Enable Install via repo links?",
         "index_fail": "✘ Failed to load index. Check the repo config.",
@@ -283,6 +308,7 @@ class Rheta(loader.Module):
         "overwrite": "✘ Ошибка, модуль пытался перезаписать встроенный модуль!",
         "dependency": "✘ Ошибка установки зависимостей!",
         "docrepo": "GitHub-репо с модулями в формате user/repo",
+        "docgh": "GitHub PAT (необязательно) — с ним индекс грузится через API без задержки CDN-кэша.",
         "doctheme": "Тема для эмодзи.",
         "install_via_repo": "Включить установку по ссылкам на репо?",
         "index_fail": "✘ Не удалось загрузить индекс. Проверь конфиг репо.",
@@ -354,6 +380,12 @@ class Rheta(loader.Module):
                 validator=loader.validators.RegExp(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
             ),
             loader.ConfigValue(
+                "github_token",
+                "",
+                lambda: self.strings["docgh"],
+                validator=loader.validators.Hidden()
+            ),
+            loader.ConfigValue(
                 "install_via_repo",
                 True,
                 lambda: self.strings["install_via_repo"],
@@ -376,6 +408,7 @@ class Rheta(loader.Module):
     async def client_ready(self, client: 'telethon.TelegramClient', database: 'loader.Database') -> None:
         self.idx = RepoIndex()
         self.idx.repo = self.config["repo"]
+        self.idx.github_token = self.config["github_token"]
         self.ui = RhetaUI(self)
 
         await self.idx.fetch_index()
@@ -391,6 +424,7 @@ class Rheta(loader.Module):
     @loader.loop(interval=1800, autostart=True)
     async def refresh(self):
         self.idx.repo = self.config["repo"]
+        self.idx.github_token = self.config["github_token"]
         await self.idx.fetch_index()
 
     async def answer(self, callback: Any, text: Optional[str] = None, alert: bool = False) -> None:
@@ -592,7 +626,7 @@ class Rheta(loader.Module):
 
         message = await utils.answer(message, f"{self.ui.emoji('search')} <b>{self.strings['search'].format(query=f'<code>{utils.escape_html(query)}</code>')}</b>")
 
-        if not await self.idx.ensure_fresh() and not self.idx.items:
+        if not await self.idx.fetch_index() and not self.idx.items:
             return await utils.answer(message, f"{self.ui.emoji('error')} <b>{self.strings['index_fail']}</b>")
 
         modules = self.idx.search(query, limit=50)
