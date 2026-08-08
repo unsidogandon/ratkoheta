@@ -1,0 +1,7 @@
+﻿_state.json
+_catalog.txt
+_failures.txt
+__pycache__/
+*.pyc
+
+modules/eremeyko/ne_Hikka/AIHikka.py
