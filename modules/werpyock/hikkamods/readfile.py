@@ -19,7 +19,7 @@ from .. import loader, utils
 
 @loader.tds
 class ReadFileMod(loader.Module):
-    """Чтение файла из реплая"""
+    """Чтение файла из реплая."""
 
     strings = {"name": "ReadFile"}
 
