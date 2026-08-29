@@ -1,4 +1,4 @@
-__version__ = (2, 3, 0)
+__version__ = (2, 4, 0)
 
 # meta developer: @karps_lol
 # meta pic: https://raw.githubusercontent.com/unsidogandon/ratkoheta/main/assets/banner.jpg
@@ -275,7 +275,7 @@ class Rheta(loader.Module):
         "docrepo": "GitHub repo with modules, format: user/repo",
         "docgh": "GitHub PAT (optional) — with it the index is fetched via API without CDN cache delay.",
         "doctheme": "Theme for emojis.",
-        "install_via_repo": "React to repo module links (post a dlm command instead of installing)?",
+        "install_via_repo": "Show an install card when someone posts a repo module link?",
         "index_fail": "✘ Failed to load index. Check the repo config.",
         "updating": "Updating module...",
         "uptodate": "Already up to date (v{version}).",
@@ -310,7 +310,7 @@ class Rheta(loader.Module):
         "docrepo": "GitHub-репо с модулями в формате user/repo",
         "docgh": "GitHub PAT (необязательно) — с ним индекс грузится через API без задержки CDN-кэша.",
         "doctheme": "Тема для эмодзи.",
-        "install_via_repo": "Реагировать на ссылки модулей из репо (кидать команду dlm вместо авто-установки)?",
+        "install_via_repo": "Показывать карточку установки, когда кто-то кидает ссылку на модуль из репо?",
         "index_fail": "✘ Не удалось загрузить индекс. Проверь конфиг репо.",
         "updating": "Обновляю модуль...",
         "uptodate": "Уже стоит последняя версия (v{version}).",
@@ -704,4 +704,37 @@ class Rheta(loader.Module):
         if not m:
             return
 
-        await message.respond(f"{self.get_prefix()}dlm {m.group(0)}")
+        url = m.group(0)
+        fname = url.rsplit("/", 1)[-1]
+        buttons = [
+            [
+                {"text": "📥 Установить", "callback": self.install_link, "args": (url,)},
+                {"text": "📄 Код", "url": url},
+            ]
+        ]
+        await self.inline.form(
+            f"{self.ui.emoji('module')} Модуль <code>{utils.escape_html(fname)}</code>\n"
+            f"<i>Установка не запущена. Нажми «Установить», чтобы поставить.</i>",
+            message,
+            reply_markup=buttons,
+            silent=True,
+        )
+
+    async def install_link(self, call: Any, url: str) -> None:
+        chat_id = getattr(call, "chat_id", None)
+        if chat_id:
+            await self.answer(call, "Устанавливаю...")
+            await self._client.send_message(chat_id, f"{self.get_prefix()}dlm {url}")
+            return
+        ologs = self.get_logs()
+        res = await self.lookup("loader").download_and_install(url)
+        if res == 1:
+            await self.answer(call, self.strings["success"], True)
+        else:
+            nlogs = self.get_logs()[len(ologs):].lower()
+            if "overwrite" in nlogs:
+                await self.answer(call, self.strings["overwrite"], True)
+            elif any(x in nlogs for x in ("requir", "depend", "package")):
+                await self.answer(call, self.strings["dependency"], True)
+            else:
+                await self.answer(call, self.strings["error"], True)
