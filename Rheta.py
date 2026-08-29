@@ -1,4 +1,4 @@
-__version__ = (2, 2, 0)
+__version__ = (2, 3, 0)
 
 # meta developer: @karps_lol
 # meta pic: https://raw.githubusercontent.com/unsidogandon/ratkoheta/main/assets/banner.jpg
@@ -275,7 +275,7 @@ class Rheta(loader.Module):
         "docrepo": "GitHub repo with modules, format: user/repo",
         "docgh": "GitHub PAT (optional) — with it the index is fetched via API without CDN cache delay.",
         "doctheme": "Theme for emojis.",
-        "install_via_repo": "Enable Install via repo links?",
+        "install_via_repo": "React to repo module links (post a dlm command instead of installing)?",
         "index_fail": "✘ Failed to load index. Check the repo config.",
         "updating": "Updating module...",
         "uptodate": "Already up to date (v{version}).",
@@ -310,7 +310,7 @@ class Rheta(loader.Module):
         "docrepo": "GitHub-репо с модулями в формате user/repo",
         "docgh": "GitHub PAT (необязательно) — с ним индекс грузится через API без задержки CDN-кэша.",
         "doctheme": "Тема для эмодзи.",
-        "install_via_repo": "Включить установку по ссылкам на репо?",
+        "install_via_repo": "Реагировать на ссылки модулей из репо (кидать команду dlm вместо авто-установки)?",
         "index_fail": "✘ Не удалось загрузить индекс. Проверь конфиг репо.",
         "updating": "Обновляю модуль...",
         "uptodate": "Уже стоит последняя версия (v{version}).",
@@ -695,29 +695,13 @@ class Rheta(loader.Module):
         if not self.config["install_via_repo"]:
             return
 
-        url = message.raw_text.strip()
-
-        if not url.startswith(f"https://raw.githubusercontent.com/{self.config['repo']}/main/modules/"):
+        if getattr(message, "out", False):
             return
 
-        ologs = self.get_logs()
+        text = getattr(message, "raw_text", "") or ""
+        pattern = r"https://raw\.githubusercontent\.com/" + re.escape(self.config["repo"]) + r"/main/modules/[^\s\"'<>()\[\]]+\.py"
+        m = re.search(pattern, text)
+        if not m:
+            return
 
-        res = await self.lookup("loader").download_and_install(url)
-
-        if res == 1:
-            reply = await message.respond("✅")
-        else:
-            alogs = self.get_logs()
-            nlogs = alogs[len(ologs):].lower()
-
-            if "overwrite" in nlogs:
-                reply = await message.respond("😨")
-            elif any(x in nlogs for x in ("requir", "depend", "package")):
-                deps = self.parse_deps(nlogs)
-                reply = await message.respond(f"📋{','.join(deps.split(', ')[:5])}" if deps else "📋")
-            else:
-                reply = await message.respond("❌")
-
-        await asyncio.sleep(1)
-        await reply.delete()
-        await message.delete()
+        await message.respond(f"{self.get_prefix()}dlm {m.group(0)}")
