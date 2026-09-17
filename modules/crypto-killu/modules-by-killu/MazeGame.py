@@ -322,7 +322,7 @@ class MazeModMod(loader.Module):
 
     def __init__(self):
         self.config = loader.ModuleConfig(
-            "maze_width", 21, lambda: self.strings("cfg_width"),
+            "maze_width", 10, lambda: self.strings("cfg_width"),
             "wall_fire_percent", 15, lambda: self.strings("cfg_wall_fire"),
             "view_size_single", 6, lambda: self.strings("cfg_view_single"),
             "view_size_multi", 7, lambda: self.strings("cfg_view_multi")
