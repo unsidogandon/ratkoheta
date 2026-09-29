@@ -1,4 +1,4 @@
-__version__ = (1, 0, 4)
+__version__ = (1, 1, 3)
 # meta developer: @mofkomodules, @pureoffic
 # Name: ComfyImageGen
 # meta banner: https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/comfy_imagegen_banner.png
@@ -6,8 +6,8 @@ __version__ = (1, 0, 4)
 # meta fhsdesc: image generation, imagegen, comfy, comfyui, mofko, image, генерация, ии, комфи, изображения
 # meta tags: image generation, imagegen, comfy, comfyui, mofko, image, генерация, ии, комфи, изображения
 # meta link: https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/ComfyImageGen.py
-# Diff: Фиксы под 2.1.0. 
-# requires: aiohttp pillow cachetools google-genai
+# Diff:  Мини-фиксы, .checkwf перенесена в аргумент .addwf -c, списки моделей и лор теперь загружаются через /models/{folder}, автоудаление для обычных генераций в ultcomfy, в меню триггеров теперь можно выбрать модель и лоры. 
+# requires: cachetools google-genai
 # scope: heroku_min 2.1.0
 
 import logging
@@ -24,8 +24,9 @@ import string
 import tempfile
 import mimetypes
 import contextvars
-from urllib.parse import urlparse
+from urllib.parse import parse_qs
 from urllib.parse import quote
+from urllib.parse import urlparse
 
 import aiohttp
 from cachetools import TTLCache
@@ -33,7 +34,7 @@ from PIL import Image
 from herokutl.extensions import html
 from herokutl.errors.rpcerrorlist import ChannelPrivateError, ChatAdminRequiredError, UserNotParticipantError
 from herokutl.tl.functions.channels import GetFullChannelRequest
-from herokutl.tl.functions.messages import GetForumTopicsByIDRequest, SendMediaRequest, SendMessageRequest
+from herokutl.tl.functions.messages import GetForumTopicsByIDRequest
 
 try:
     from google import genai
@@ -43,24 +44,6 @@ except ImportError:
     GENAI_AVAILABLE = False
 
 from herokutl.tl.types import ForumTopicDeleted, Message, PeerChannel
-try:
-    from herokutl.tl.types import (
-        DocumentAttributeFilename,
-        InputMediaUploadedDocument,
-        InputMediaUploadedPhoto,
-        InputReplyToMessage,
-        InputReplyToMonoForum,
-    )
-except ImportError:
-    DocumentAttributeFilename = None
-    InputMediaUploadedDocument = None
-    InputMediaUploadedPhoto = None
-    InputReplyToMessage = None
-    InputReplyToMonoForum = None
-try:
-    from herokutl.tl.types import InputPeerSelf
-except ImportError:
-    InputPeerSelf = None
 from .. import loader, utils
 from ..inline.types import InlineCall
 
@@ -91,20 +74,18 @@ class UserFacingError(ValueError):
 
 
 _ASSETS_BASE_URL = "https://github.com/mofko/MofkoModules/raw/refs/heads/main/assets"
-_ANIME_WF_URL = f"{_ASSETS_BASE_URL}/Anime_workflow.json"
-_ANIME_V2_WF_URL = f"{_ASSETS_BASE_URL}/anime_v2_workflow.json"
-_Z_IMAGE_TURBO_WF_URL = f"{_ASSETS_BASE_URL}/z_image_turbo_workflow.json"
-_SDXL_REAL1_WF_URL = f"{_ASSETS_BASE_URL}/sdxl_real1_workflow.json"
+_ANIME_V2_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/AnimaWF.json"
+_ANIME_V3_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/AnimaWF_AnimeColoring.json"
+_ILL_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/Anime_workflow.json"
+_KREA2_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/Krea2_WF.json"
 _SDXL_REAL2_WF_URL = f"{_ASSETS_BASE_URL}/sdxl_real2_workflow.json"
-_ERNIE_WF_URL = f"{_ASSETS_BASE_URL}/ernie_workflow.json"
-_FLUX_EDIT_WF_URL = f"{_ASSETS_BASE_URL}/flux_i2i.json"
 _UPSCALE_WF_URL = f"{_ASSETS_BASE_URL}/UpscaleWF1_clean.json"
 _VIDEO_UPSCALE_WF_URL = f"{_ASSETS_BASE_URL}/utility-gan_upscaler.json"
-_CLOUD_QWEN_EDIT_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/QwenEditCloud.json"
-_CLOUD_ILL_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/illcloud.json"
-_CLOUD_ZIT_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/zitcloud.json"
-_CLOUD_ANIMA_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/animacloud.json"
-_CLOUD_ANIMA2_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/canima2_workflow.json"
+_CLOUD_KREA2_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/Krea2_%D1%81WF%20.json"
+_CLOUD_ANIMA_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/Anima_cWF.json"
+_CLOUD_ANIMA2_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/Anima2_cWF.json"
+_CLOUD_ILL_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/Cill.json"
+_CLOUD_QWEN_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/Cloud%20qwen%20i2i.json"
 _CLOUD_UPSCALE_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/cloud%20upscale.json"
 _CLOUD_VIDEO_UPSCALE_WF_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/cloud%20vupscaler.json"
 _CDOWN_TYPE_CHECKPOINT = "checkpoint"
@@ -122,12 +103,12 @@ _CDOWN_TYPE_SAM = "sam"
 _CDOWN_TYPES = {
     _CDOWN_TYPE_CHECKPOINT: {
         "label_key": "cdown_type_checkpoint",
-        "tags": ("models", "checkpoint"),
+        "tags": ("models", "checkpoints"),
         "folder_aliases": ("checkpoints", "checkpoint"),
     },
     _CDOWN_TYPE_LORA: {
         "label_key": "cdown_type_lora",
-        "tags": ("models", "lora"),
+        "tags": ("models", "loras"),
         "folder_aliases": ("loras", "lora"),
     },
     _CDOWN_TYPE_VAE: {
@@ -142,17 +123,17 @@ _CDOWN_TYPES = {
     },
     _CDOWN_TYPE_UPSCALER: {
         "label_key": "cdown_type_upscaler",
-        "tags": ("models", "upscale_model"),
+        "tags": ("models", "upscale_models"),
         "folder_aliases": ("upscale_models", "upscale_model", "upscaler", "upscalers"),
     },
     _CDOWN_TYPE_TEXT_ENCODER: {
         "label_key": "cdown_type_text_encoder",
-        "tags": ("models", "text_encoder"),
+        "tags": ("models", "text_encoders"),
         "folder_aliases": ("text_encoders", "text_encoder"),
     },
     _CDOWN_TYPE_UNET: {
         "label_key": "cdown_type_unet",
-        "tags": ("models", "unet"),
+        "tags": ("models", "diffusion_models"),
         "folder_aliases": ("diffusion_models", "diffusion_model", "unet", "unets"),
     },
     _CDOWN_TYPE_CLIP_VISION: {
@@ -167,17 +148,17 @@ _CDOWN_TYPES = {
     },
     _CDOWN_TYPE_STYLE_MODEL: {
         "label_key": "cdown_type_style_model",
-        "tags": ("models", "style_model"),
+        "tags": ("models", "style_models"),
         "folder_aliases": ("style_models", "style_model"),
     },
     _CDOWN_TYPE_MODEL_PATCH: {
         "label_key": "cdown_type_model_patch",
-        "tags": ("models", "model_patch"),
+        "tags": ("models", "model_patches"),
         "folder_aliases": ("model_patches", "model_patch", "patches", "patch"),
     },
     _CDOWN_TYPE_SAM: {
         "label_key": "cdown_type_sam",
-        "tags": ("models", "sam"),
+        "tags": ("models", "sams"),
         "folder_aliases": ("sams", "sam"),
     },
 }
@@ -188,9 +169,18 @@ _COMFY_BACKEND_LOCAL = "local"
 _COMFY_BACKEND_CLOUD = "cloud"
 _COMFY_CLOUD_BASE_URL = "https://cloud.comfy.org"
 _CIVITAI_IMAGES_URL = "https://civitai.com/api/v1/images"
+_CIVITAI_MODEL_URL = "https://civitai.com/api/v1/models/{}"
+_CIVITAI_MODEL_VERSION_URL = "https://civitai.com/api/v1/model-versions/{}"
 _CSHARE_TOP_CHAT = "comfyideas"
 _CSHARE_TOP_MESSAGE_ID = 5
 _ENHANCE_PROMPT_URL = f"{_ASSETS_BASE_URL}/enhance_system_prompt.txt"
+_QWEN_DEFAULT_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+_TRANSLATE_URL = "https://translate.googleapis.com/translate_a/single"
+_COMFY_TEXT_PROVIDER = "comfy_text"
+_COMFY_TEXT_CLIP_NAME = "qwen3vl_4b_fp8_scaled.safetensors"
+_COMFY_TEXT_WORKFLOW_URL = f"{_ASSETS_BASE_URL}/Text_gen.json"
+_COMFY_TEXT_WORKFLOW_CACHE_REVISION = 2
+_COMFY_TEXT_ENHANCE_TIMEOUT = 180
 _DEFAULT_INFO_BANNER_URL = "https://raw.githubusercontent.com/mofko/MofkoModules/refs/heads/main/assets/comfy_imagegen_banner_assets.png"
 _UPDATE_NOTICE_LIMIT = 2
 _STARTUP_UPDATE_CHECK_DELAY = 30
@@ -438,68 +428,63 @@ _COMFY_TIMEOUTS = {
     "object_info_all": 30,
     "retrieve_media": 60,
     "upload_image": 60,
+    "translation": 15,
 }
-_ANIME_WORKFLOW_NAME = "Anime"
 _ANIME_V2_WORKFLOW_NAME = "Anima"
-_Z_IMAGE_TURBO_WORKFLOW_NAME = "ZImageTurbo"
-_SDXL_REAL1_WORKFLOW_NAME = "SDXLReal1"
+_ANIME_V3_WORKFLOW_NAME = "Anima2"
+_ILL_WORKFLOW_NAME = "ill"
+_KREA2_WORKFLOW_NAME = "Krea2"
 _SDXL_REAL2_WORKFLOW_NAME = "SDXLReal2"
-_ERNIE_WORKFLOW_NAME = "Ernie"
-_FLUX_EDIT_WORKFLOW_NAME = "FluxEdit"
-_CLOUD_QWEN_EDIT_WORKFLOW_NAME = "QwenEdit"
-_CLOUD_ILL_WORKFLOW_NAME = "Cill"
-_CLOUD_ZIT_WORKFLOW_NAME = "Czit"
+_CLOUD_KREA2_WORKFLOW_NAME = "CKrea2"
 _CLOUD_ANIMA_WORKFLOW_NAME = "CAnima"
 _CLOUD_ANIMA2_WORKFLOW_NAME = "CAnima2"
+_CLOUD_ILL_WORKFLOW_NAME = "Cill"
+_CLOUD_QWEN_WORKFLOW_NAME = "CQwen"
+_CLOUD_WORKFLOW_COST_ALIASES = {
+    _KREA2_WORKFLOW_NAME: _CLOUD_KREA2_WORKFLOW_NAME,
+    _ANIME_V2_WORKFLOW_NAME: _CLOUD_ANIMA_WORKFLOW_NAME,
+    _ANIME_V3_WORKFLOW_NAME: _CLOUD_ANIMA2_WORKFLOW_NAME,
+}
 _DEFAULT_WORKFLOW_NAME = _ANIME_V2_WORKFLOW_NAME
-_DEFAULT_CLOUD_WORKFLOW_NAME = _CLOUD_ANIMA2_WORKFLOW_NAME
-_ANIME_POSITIVE_EMBEDDING = "embedding:lazypos,"
+_DEFAULT_CLOUD_WORKFLOW_NAME = _CLOUD_KREA2_WORKFLOW_NAME
 _GLOBAL_POSITIVE_DEFAULT = ""
 _BUILTIN_WORKFLOW_POSITIVE_DEFAULTS = {
-    _ANIME_WORKFLOW_NAME: _ANIME_POSITIVE_EMBEDDING,
+    _ILL_WORKFLOW_NAME: "embedding:lazypos,",
 }
 _GLOBAL_NEGATIVE_DEFAULT = "worst quality, low quality, lowres, blurry, jpeg artifacts, sepia, bad anatomy, watermark, artist name,"
 _REALISTIC_NEGATIVE_DEFAULT = "text, motion lines, effects, border, frame. (worst quality, low quality, normal quality, lowres, low details, oversaturated, undersaturated, overexposed, underexposed, grayscale, bad photo, bad photography, bad art:1.4)"
 _BUILTIN_WORKFLOW_NEGATIVE_DEFAULTS = {
-    _ANIME_WORKFLOW_NAME: "embedding:lazyneg,",
     _ANIME_V2_WORKFLOW_NAME: "Score_6, score_5, score_4, worst quality, low quality, jpeg artifacts, blurry, text, watermark, logo, signature, bad anatomy, bad hands, extra limbs, missing limbs, fused fingers, bad face, realistic, photorealistic, 3d, render, flat shading, unnatural shadows, aliasing, distortion, compression artifacts, corrupted, oversaturated, washed out colors",
-    _SDXL_REAL1_WORKFLOW_NAME: _REALISTIC_NEGATIVE_DEFAULT,
+    _ANIME_V3_WORKFLOW_NAME: "Score_6, score_5, score_4, worst quality, low quality, jpeg artifacts, blurry, text, watermark, logo, signature, bad anatomy, bad hands, extra limbs, missing limbs, fused fingers, bad face, realistic, photorealistic, 3d, render, flat shading, unnatural shadows, aliasing, distortion, compression artifacts, corrupted, oversaturated, washed out colors",
     _SDXL_REAL2_WORKFLOW_NAME: _REALISTIC_NEGATIVE_DEFAULT,
-    _Z_IMAGE_TURBO_WORKFLOW_NAME: "lowres,",
-    _ERNIE_WORKFLOW_NAME: "lowres,",
-    _FLUX_EDIT_WORKFLOW_NAME: "",
 }
 _BUILTIN_WORKFLOW_URLS = {
-    _ANIME_WORKFLOW_NAME: _ANIME_WF_URL,
     _ANIME_V2_WORKFLOW_NAME: _ANIME_V2_WF_URL,
-    _Z_IMAGE_TURBO_WORKFLOW_NAME: _Z_IMAGE_TURBO_WF_URL,
-    _SDXL_REAL1_WORKFLOW_NAME: _SDXL_REAL1_WF_URL,
+    _ANIME_V3_WORKFLOW_NAME: _ANIME_V3_WF_URL,
+    _ILL_WORKFLOW_NAME: _ILL_WF_URL,
+    _KREA2_WORKFLOW_NAME: _KREA2_WF_URL,
     _SDXL_REAL2_WORKFLOW_NAME: _SDXL_REAL2_WF_URL,
-    _ERNIE_WORKFLOW_NAME: _ERNIE_WF_URL,
-    _FLUX_EDIT_WORKFLOW_NAME: _FLUX_EDIT_WF_URL,
 }
 _CLOUD_WORKFLOW_URLS = {
-    _CLOUD_ANIMA2_WORKFLOW_NAME: _CLOUD_ANIMA2_WF_URL,
-    _CLOUD_QWEN_EDIT_WORKFLOW_NAME: _CLOUD_QWEN_EDIT_WF_URL,
-    _CLOUD_ILL_WORKFLOW_NAME: _CLOUD_ILL_WF_URL,
-    _CLOUD_ZIT_WORKFLOW_NAME: _CLOUD_ZIT_WF_URL,
+    _CLOUD_KREA2_WORKFLOW_NAME: _CLOUD_KREA2_WF_URL,
     _CLOUD_ANIMA_WORKFLOW_NAME: _CLOUD_ANIMA_WF_URL,
+    _CLOUD_ANIMA2_WORKFLOW_NAME: _CLOUD_ANIMA2_WF_URL,
+    _CLOUD_ILL_WORKFLOW_NAME: _CLOUD_ILL_WF_URL,
+    _CLOUD_QWEN_WORKFLOW_NAME: _CLOUD_QWEN_WF_URL,
 }
 _BUILTIN_WORKFLOW_TELEGRAM_URLS = {
-    _ANIME_WORKFLOW_NAME: "https://t.me/comfystorage/12",
     _ANIME_V2_WORKFLOW_NAME: "https://t.me/comfystorage/15",
-    _SDXL_REAL1_WORKFLOW_NAME: "https://t.me/comfystorage/16",
+    _ANIME_V3_WORKFLOW_NAME: "https://t.me/comfystorage/37",
+    _ILL_WORKFLOW_NAME: "https://t.me/comfystorage/12",
+    _KREA2_WORKFLOW_NAME: "https://t.me/comfystorage/38",
     _SDXL_REAL2_WORKFLOW_NAME: "https://t.me/comfystorage/18",
-    _Z_IMAGE_TURBO_WORKFLOW_NAME: "https://t.me/comfystorage/19",
-    _ERNIE_WORKFLOW_NAME: "https://t.me/comfystorage/20",
-    _FLUX_EDIT_WORKFLOW_NAME: "https://t.me/comfystorage/27",
 }
 _CLOUD_WORKFLOW_TELEGRAM_URLS = {
-    _CLOUD_ANIMA2_WORKFLOW_NAME: "https://t.me/comfystorage/35",
-    _CLOUD_QWEN_EDIT_WORKFLOW_NAME: "https://t.me/comfystorage/29",
+    _CLOUD_KREA2_WORKFLOW_NAME: "https://t.me/comfystorage/39",
+    _CLOUD_ANIMA_WORKFLOW_NAME: "https://t.me/comfystorage/40",
+    _CLOUD_ANIMA2_WORKFLOW_NAME: "https://t.me/comfystorage/41",
     _CLOUD_ILL_WORKFLOW_NAME: "https://t.me/comfystorage/30",
-    _CLOUD_ZIT_WORKFLOW_NAME: "https://t.me/comfystorage/31",
-    _CLOUD_ANIMA_WORKFLOW_NAME: "https://t.me/comfystorage/32",
+    _CLOUD_QWEN_WORKFLOW_NAME: "https://t.me/comfystorage/42",
 }
 _UPSCALE_WORKFLOW_TELEGRAM_URL = "https://t.me/comfystorage/21"
 _CLOUD_UPSCALE_WORKFLOW_TELEGRAM_URL = "https://t.me/comfystorage/33"
@@ -510,13 +495,22 @@ _CTOOL_UPSCALE = "upscale"
 _CTOOL_VIDEO_UPSCALE = "video_upscale"
 _CTOOL_RMBG = "rmbg"
 _CTOOL_FPS = "fps"
+_ARCHIVE_MAX_PENDING = 2
+_PROGRESS_BAR_ICON = ("5240115703213759589", "😀")
+_PROGRESS_BAR_FILLED = (
+    ("5240246089830933546", "😆"),
+    ("5240312631759251539", "😗"),
+    ("5240417115428661680", "😜"),
+    ("5240080158064420239", "🤨"),
+    ("5240265533147884330", "🙃"),
+)
+_PROGRESS_BAR_EMPTY = ("5240434196513596897", "🥶")
 
 @loader.tds
 class ComfyImageGenMod(loader.Module):
     """Image generation module via ComfyUI
     Модуль генерации изображений через ComfyUI.
-    Поддерживает локальную генерацию любых изображений/видео и т.д. Примеры генераций через модуль можно посмотреть здесь: @comfyideas.
-    Перед использованием модуля рекомендуется открыть справку командой .chelp.
+    Примеры генераций через модуль можно посмотреть здесь: @comfyideas.
     """
 
     strings = {
@@ -527,19 +521,57 @@ class ComfyImageGenMod(loader.Module):
         "cfg_model": "Default model file (e.g., waiIllustriousSDXL_v170)",
         "cfg_max_mb": "Max input image size in MB for img2img",
         "cfg_max_output_mb": "Max output media size in MB",
+        "cfg_max_image_pixels": "Max pixels for images sent as Telegram photos. 0 disables the limit",
         "cfg_output_format": "Result output format: photo (Telegram compressed image), document_png (PNG file lossless)",
         "cfg_ws_update_interval": "Generation status update interval in seconds: 1-5, 0 disables",
         "cfg_gemini_api_key": "Gemini API key(s) for AI prompt enhancement. Use comma to add multiple keys.",
         "cfg_groq_api_key": "Groq API key(s) for AI prompt enhancement. Use comma to add multiple keys.",
         "cfg_openrouter_api_key": "OpenRouter API key(s) for AI prompt enhancement. Use comma to add multiple keys.",
+        "cfg_openai_api_key": "OpenAI API key(s) for AI prompt enhancement. Use comma to add multiple keys.",
         "cfg_grok_api_key": "Grok/xAI API key(s) for AI prompt enhancement. Use comma to add multiple keys.",
         "cfg_deepseek_api_key": "DeepSeek API key(s) for AI prompt enhancement. Use comma to add multiple keys.",
+        "cfg_nvidiaapi_api_key": "NVIDIA API key(s) for AI prompt enhancement. Use comma to add multiple keys.",
+        "cfg_qwen_api_key": "Qwen (Model Studio) API key(s) for AI prompt enhancement. Use comma to add multiple keys.",
+        "cfg_qwen_base_url": "Qwen Model Studio OpenAI-compatible base URL. Keep the default for the international endpoint; set your workspace URL for another region.",
         "cfg_update_assets": "Background module assets update interval in seconds. 0 disables it. Range: 60-14400.",
         "cfg_info_banner_url": "Banner URL for .ci and .chelp inline menus. Set 0 to disable.",
         "lora_title": '<tg-emoji emoji-id="5764779661028495989">\U0001f3a8</tg-emoji> LoRA selection',
         "lora_prompt_label": "Prompt",
         "lora_page": "Page {}/{}",
         "lora_detail_title": '<tg-emoji emoji-id="4904936030232117798">\u2699</tg-emoji> {}\nWeight: {:.1f}\nStatus: {}',
+        "lora_favorite_add": "\u2606 Add to favorites",
+        "lora_favorite_remove": "\u2605 Remove from favorites",
+        "lora_filter_all": "\u2637 All",
+        "lora_filter_favorites": "\u2605 Favorites",
+        "lora_filter_imported": "\U0001f4e5 Imported",
+        "lora_no_favorites": "No favorite LoRA models yet.",
+        "lora_no_imported": "No imported LoRA models found.",
+        "lora_search_btn": "\U0001f50e Search",
+        "lora_search_clear": "\u2716 Clear search",
+        "lora_search_input": "Enter a LoRA name or part of its name:",
+        "lora_search_label": "Search: <code>{}</code>",
+        "lora_search_empty": "No LoRA models match this search.",
+        "lora_note_label": "Note: {}",
+        "lora_note_btn": "\U0001f4dd Note",
+        "lora_note_delete": "\U0001f5d1 Delete note",
+        "lora_note_input": "Enter a note for this LoRA (up to 500 characters):",
+        "lora_note_saved": "LoRA note saved",
+        "lora_note_deleted": "LoRA note deleted",
+        "lora_triggers_label": "Triggers: {}",
+        "lora_triggers_empty": "Triggers: not set",
+        "lora_triggers_btn": "✍ Set triggers",
+        "lora_triggers_input": "Enter trigger words separated by commas or new lines:",
+        "lora_triggers_saved": "LoRA triggers saved",
+        "lora_auto_triggers_on": "✓ Automatically add triggers",
+        "lora_auto_triggers_off": "□ Automatically add triggers",
+        "lora_civitai_btn": "🌐 Load from Civitai",
+        "lora_civitai_input": "Enter a Civitai model/version ID or a model link:",
+        "lora_civitai_saved": "Civitai metadata loaded",
+        "lora_civitai_failed": "Civitai model or version was not found.",
+        "lora_civitai_base_model": "Base model: {}",
+        "lora_cloud_unavailable": "Cloud does not currently expose these LoRA models to the workflow: {}",
+        "lora_apply_unsupported": "This workflow has no supported LoRA node.",
+        "lora_apply_slots": "This workflow has only {} LoRA slot(s), but {} LoRA model(s) are selected.",
         "lora_on": '<tg-emoji emoji-id="5206607081334906820">\u2705</tg-emoji> Enabled',
         "lora_off": '<tg-emoji emoji-id="5985346521103604145">\u2b1c</tg-emoji> Disabled',
         "lora_loading": "<emoji document_id=4904936030232117798>\u2699\ufe0f</emoji> Loading LoRA list from ComfyUI...",
@@ -568,6 +600,13 @@ class ComfyImageGenMod(loader.Module):
         "mode_cloud_keys": "Cloud API keys: {}",
         "mode_keys_set": "{} set",
         "mode_keys_missing": "not set",
+        "onboarding_title": '<tg-emoji emoji-id="5443038326535759644">👋</tg-emoji> <b>Welcome to ComfyImageGen</b>',
+        "onboarding_prompt": "Choose how you want to generate images:",
+        "onboarding_local": "<b>Local ComfyUI</b>\nLocal generation - install ComfyUI on your PC first; see the <a href=\"https://t.me/ComfyUIGuide/3\">guide</a> for details.",
+        "onboarding_cloud": "<b>ComfyUI Cloud</b>\nGeneration with an API key. For a comfortable setup, you need a Creator subscription and the models listed in workflow descriptions downloaded to the right folders. More resources are <a href=\"https://t.me/comfystorage/43\">here</a>.",
+        "onboarding_btn_local": "💻 Local ComfyUI",
+        "onboarding_btn_cloud": "☁️ ComfyUI Cloud",
+        "onboarding_saved": "Backend selected. Opening help…",
         "mode_balance": "Balance: {}",
         "mode_balance_unavailable": "unavailable",
         "mode_balance_no_key": "key not set",
@@ -614,11 +653,15 @@ class ComfyImageGenMod(loader.Module):
         "cdown_validation_fail": '<tg-emoji emoji-id="5121063440311386962">👎</tg-emoji> Validation: {}',
         "cdown_folder": "Cloud folder: <code>{}</code>",
         "cdown_folder_unknown": "Cloud folder was not found in model folders; download can still be started.",
-        "cdown_result_ready": '<tg-emoji emoji-id="5206607081334906820">✅</tg-emoji> Asset is already available.',
-        "cdown_result_started": '<tg-emoji emoji-id="5206607081334906820">✅</tg-emoji> Background download started.',
+        "cdown_result_ready": '<tg-emoji emoji-id="5206607081334906820">✅</tg-emoji> Model is ready in "My models".',
+        "cdown_result_started": '<tg-emoji emoji-id="5873225338984599714">📤</tg-emoji> Background download started.',
         "cdown_result_failed": '<tg-emoji emoji-id="5121063440311386962">👎</tg-emoji> Download failed: <code>{}</code>',
+        "cdown_task": "Task: <code>{}</code>",
+        "cdown_task_status": "Import status: <code>{}</code>",
+        "cdown_task_waiting": "The model will appear in \"My models\" after the task is complete.",
         "cdown_btn_url": "Set URL",
         "cdown_btn_install": "Install",
+        "cdown_btn_refresh": "Refresh status",
         "cdown_input_url": "Send Hugging Face or Civitai download URL:",
         "cdown_no_key": "ComfyUI Cloud API key is not set. Open .cmode and add a key.",
         "cdown_need_url": "Set URL first.",
@@ -626,6 +669,26 @@ class ComfyImageGenMod(loader.Module):
         "cdown_checking": "Checking URL...",
         "cdown_installing": "Starting download...",
         "cdown_bad_url": "Only huggingface.co, civitai.com and civitai.red URLs are supported.",
+        "clib_title": '<tg-emoji emoji-id="5444965220663458467">📁</tg-emoji> Cloud model library',
+        "clib_summary": "Model assets: <code>{}</code> · categories: <code>{}</code>",
+        "clib_folder_title": "Category: <code>{}</code>",
+        "clib_name": "Model: <code>{}</code>",
+        "clib_category": "Category: <code>{}</code>",
+        "clib_tags": "Tags: <code>{}</code>",
+        "clib_empty": "No imported model assets found.",
+        "clib_btn_refresh": "🔄 Refresh",
+        "clib_btn_move": "Move category",
+        "clib_btn_delete": "🗑 Delete",
+        "clib_delete_title": "Delete model?",
+        "clib_delete_confirm": "🗑 Delete permanently",
+        "clib_deleted": "Model removed from Cloud library.",
+        "clib_deleting": "Deleting model...",
+        "clib_move_title": "Choose the model category",
+        "clib_loading": "Loading Cloud model library...",
+        "clib_updating": "Updating category...",
+        "clib_moved": "Model category updated.",
+        "clib_immutable": "This asset is immutable and cannot be updated.",
+        "clib_no_key": "ComfyUI Cloud API key is not set. Open .cmode and add a key.",
         "cdown_type_checkpoint": "Checkpoint",
         "cdown_type_lora": "LoRA",
         "cdown_type_vae": "VAE",
@@ -638,13 +701,13 @@ class ComfyImageGenMod(loader.Module):
         "cdown_type_style_model": "Style Model",
         "cdown_type_model_patch": "Model Patch",
         "cdown_type_sam": "SAM",
-        "cloud_confirm_title": "ComfyUI Cloud",
+        "cloud_confirm_title": '<tg-emoji emoji-id="5839354140261619193">\U0001f6dc</tg-emoji> ComfyUI Cloud',
         "cloud_confirm_balance": "Balance: {}",
         "cloud_confirm_cost": "Cost: {}",
         "cloud_confirm_cost_unavailable": "unavailable",
         "cloud_confirm_batch": "Batch: {}",
-        "cloud_confirm_workflow": "Workflow: {}",
-        "cloud_confirm_model": "Model: {}",
+        "cloud_confirm_workflow": '<tg-emoji emoji-id="5444965220663458467">\U0001f4c1</tg-emoji> Workflow: {}',
+        "cloud_confirm_model": '<tg-emoji emoji-id="5206591666697306436">\U0001f36d</tg-emoji> Model: {}',
         "cloud_confirm_prompt": "Prompt:",
         "cloud_confirm_btn_generate": "Generate",
         "cloud_confirm_btn_batch": "Batch: {}",
@@ -666,10 +729,18 @@ class ComfyImageGenMod(loader.Module):
         "unavailable": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> ComfyUI is unavailable.",
         "img_too_large": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Input image is too large (max. {} MB).",
         "output_too_large": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Output media is too large (max. {} MB).",
+        "image_too_many_pixels": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Image is too large to send as a photo (max. {} MP). Send it as document PNG or reduce its size.",
         "no_reply_photo": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Reply to a photo for img2img.",
+        "album_picker_title": "<b>Select an image from the album</b>",
+        "album_picker_desc": "The album contains <code>{}</code> images.",
+        "album_picker_button": "Photo {}",
+        "album_picker_expired": "Image selection has expired. Run the command again.",
+        "album_picker_unavailable": "Could not load the selected album image.",
         "wf_not_found": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Workflow '{}' not found. Available: {}",
-        "add_wf_no_reply": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Reply to a JSON file to add a workflow.",
+        "add_wf_no_reply": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Reply to a JSON file or put a Comfy Cloud share link after the workflow name.",
         "add_wf_bad_json": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Invalid JSON workflow file.",
+        "add_wf_cloud_share_bad": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Invalid or unavailable Comfy Cloud share link.",
+        "add_wf_cloud_share_loading": "<emoji document_id=4904936030232117798>\u2699\ufe0f</emoji> Loading shared Comfy Cloud workflow...",
         "wf_file_too_large": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Workflow JSON is too large. Max size: 10 MB.",
         "add_wf_ok": "<emoji document_id=5206607081334906820>\u2705</emoji> Workflow '{}' added.",
         "add_wf_exists": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Workflow '{}' already exists.",
@@ -689,18 +760,16 @@ class ComfyImageGenMod(loader.Module):
         "toast_no_cloud_wf": "No Cloud workflows yet.",
         "wf_list_title_builtin": '<tg-emoji emoji-id="5444965220663458467">\U0001f4c1</tg-emoji> Built-in workflows',
         "wf_list_title_custom": '<tg-emoji emoji-id="5444965220663458467">\U0001f4c1</tg-emoji> Custom workflows',
-        "wf_desc_anime": "Anime image generation, accepts all ill, pony, SD models and similar ones.",
-        "wf_desc_anime_v2": "Second anime workflow, works on Anima models. MiaoMiao is recommended [https://civitai.red/models/934764/miaomiao-harem?modelVersionId=2967371].",
-        "wf_desc_zimage_turbo": "Realistic image generation, does not support i2i. Made for intorealism_zit [https://civitai.red/models/1609320/intorealism?modelVersionId=2912231], but you can try other models too.",
-        "wf_desc_sdxl_real1": "Realistic SDXL 1.0 workflow made for mopMixtureOfPerverts_v20 [https://civitai.red/models/1854124?modelVersionId=2159501].",
-        "wf_desc_sdxl_real2": "If you do not really like SDXLReal1, this is the second realistic SDXL workflow, using xxxRay_dmd2 [https://civitai.red/models/1064836/xxx-ray].",
-        "wf_desc_ernie": "Workflow with the newest Ernie model. On a mid-range GPU generation takes about 2-3 minutes on average. Works great with text, infographics and any requests when the prompt is good. Uses RedCraft [https://civitai.red/models/958009/redcraft-or].",
-        "wf_desc_fluxedit": "Image editing for mid-range PCs, uses Flux2-Klein.",
-        "wf_desc_cloud_qwenedit": "Редактирование изображений с QwenEdit (4-15 кред/генерация)",
-        "wf_desc_cloud_ill": "Illustrious вф с wai-ill (1-2 кред/генерация)",
-        "wf_desc_cloud_zit": "ZImageTurbo вф (1-5 кред/генерация)",
-        "wf_desc_cloud_anima": "Анима вф с дефолт моделькой (1-3 кред/генерация)",
-        "wf_desc_cloud_anima2": "Анима 2 (Нужен статус Creator) (1-3 кред/генерация)",
+        "wf_desc_anime_v2": "Workflow made for MiaoMiao Harem [https://civitai.red/models/934764/miaomiao-harem?modelVersionId=3248362].",
+        "wf_desc_anime_v3": "Workflow made for MiaoMiao Harem (Anime Coloring) [https://civitai.red/models/934764/miaomiao-harem?modelVersionId=3203207].",
+        "wf_desc_ill": "Anime image generation (based on [https://civitai.red/models/376130/nova-anime-xl?modelVersionId=2940478]).",
+        "wf_desc_krea2": "Workflow made for the LUSTIFY model: strong realistic generations and weaker anime generations. [https://civitai.red/models/573152/lustify-nsfw-checkpoint?modelVersionId=3112728] (Uses a Q4 model; you can fork the workflow to use another one).",
+        "wf_desc_sdxl_real2": "Realistic SDXL 1.0 workflow made for xxxRay_dmd2 [https://civitai.red/models/1064836/xxx-ray].",
+        "wf_desc_cloud_krea2": "Cloud workflow made for the LUSTIFY model: strong realistic generations and weaker anime generations. [https://civitai.red/models/573152/lustify-nsfw-checkpoint?modelVersionId=3112728] (3-5 credits per generation)",
+        "wf_desc_cloud_anima": "Cloud workflow made for the MiaoMiao Harem model [https://civitai.red/models/934764/miaomiao-harem?modelVersionId=3248362]. (2-4 credits per generation).",
+        "wf_desc_cloud_anima2": "Cloud workflow made for the MiaoMiao Harem model with anime coloring [https://civitai.red/models/934764/miaomiao-harem?modelVersionId=3203207]. (2-4 credits per generation).",
+        "wf_desc_cloud_ill": "Cloud anime image generation (based on [https://civitai.red/models/376130/nova-anime-xl?modelVersionId=2940478]) (2-4 credits per generation).",
+        "wf_desc_cloud_qwen": "Image editing (based on the Qwen-Rapid-AIO-NSFW-v11.1 model [https://huggingface.co/Phr00t/Qwen-Image-Edit-Rapid-AIO/blob/main/v11/Qwen-Rapid-AIO-NSFW-v11.1.safetensors]) (4-7 credits per generation).",
         "wf_page": "Page {}/{}",
         "wf_current": "Current: {}",
         "wf_limited_hint": 'Second tap on a workflow enables <tg-emoji emoji-id="5271842287326863410">🔵</tg-emoji> limited mode. Only positive prompt, negative prompt, and media inputs remain editable. This beta feature is mainly made for video generation.',
@@ -744,8 +813,15 @@ class ComfyImageGenMod(loader.Module):
         "models_page": "Page {}/{}",
         "models_set": "<emoji document_id=5206607081334906820>\u2705</emoji> Model set: {}",
         "models_empty": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> No checkpoint or UNET models found.",
+        "models_load_failed": "Could not load ComfyUI models. Try again shortly.",
+        "inline_update_failed": "Could not update this menu. Open it again.",
         "models_manual_btn": "\u270f\ufe0f Enter manually",
         "models_manual_input": "Enter model filename:",
+        "models_search_btn": "\U0001f50e Search",
+        "models_search_clear": "\u2716 Clear search",
+        "models_search_input": "Enter a model name or part of its name:",
+        "models_search_label": "Search: <code>{}</code>",
+        "models_search_empty": "No models match this search.",
         "models_as_workflow_btn": "As in workflow",
         "models_as_workflow": "Cloud model: as in workflow ({})",
         "toast_model_as_workflow": "Cloud model: as in workflow",
@@ -830,7 +906,8 @@ class ComfyImageGenMod(loader.Module):
         "argset_choice_saved": "Saved: {}",
         "argset_pin_model": "📌 Pin for model",
         "argset_pin_model_ok": "Pinned for model: {}",
-        "provider_title": '<tg-emoji emoji-id="5188678912883827293">\U0001f916</tg-emoji> AI enhancement provider',
+        "provider_title": '<tg-emoji emoji-id="5188678912883827293">\U0001f916</tg-emoji> AI models and prompts',
+        "provider_menu_intro": "Select a provider to configure its model, API key, and enhancement prompt.",
         "provider_current": "Current: {}",
         "provider_status": "Status: {}",
         "provider_selected": '<tg-emoji emoji-id="5206607081334906820">\u2705</tg-emoji> Selected',
@@ -838,14 +915,36 @@ class ComfyImageGenMod(loader.Module):
         "provider_api_key": "API key: {}",
         "provider_api_key_set": '<tg-emoji emoji-id="5206607081334906820">\u2705</tg-emoji> set',
         "provider_api_key_missing": '<tg-emoji emoji-id="5985346521103604145">\u2b1c</tg-emoji> not set',
+        "provider_api_key_not_required": "not required",
+        "provider_comfy_text_info": "Uses the active ComfyUI backend; no external API key is required.",
+        "provider_comfy_text_template": "The workflow prompt and dynamic USER_PROMPT/TARGET_MODEL placeholders are used.",
+        "provider_comfy_text_unavailable": "ComfyUI Text is unavailable. Check that CLIPLoader, TextGenerate and PreviewAny are installed and that the text model is present.",
+        "provider_comfy_text_empty": "ComfyUI Text returned an empty response. Try again or check the workflow/model.",
+        "provider_comfy_text_failed": "ComfyUI Text could not enhance the prompt. Check the ComfyUI queue and server logs.",
+        "provider_comfy_text_error": "ComfyUI Text error: <code>{}</code>",
+        "provider_comfy_text_invalid_workflow": "ComfyUI Text workflow must contain USER_PROMPT, TARGET_MODEL and a PreviewAny output.",
+        "comfy_text_workflow_section": '<b><tg-emoji emoji-id="5444965220663458467">📁</tg-emoji> Text workflow</b>',
+        "comfy_text_workflow_source": "Source: {}",
+        "comfy_text_workflow_current_url": "URL: {}",
+        "comfy_text_workflow_source_default": "default",
+        "comfy_text_workflow_source_custom": "custom",
+        "comfy_text_workflow_btn_set": "✍ Set link",
+        "comfy_text_workflow_btn_reset": "🔄 Reset default",
+        "comfy_text_workflow_btn_download": "📄 Download",
+        "comfy_text_workflow_input_url": "Enter a link to the ComfyUI Text workflow:",
+        "comfy_text_workflow_saved": "Workflow link saved",
+        "comfy_text_workflow_reset": "Workflow link reset to default",
+        "comfy_text_workflow_invalid_url": "Invalid workflow link",
+        "comfy_text_workflow_download_failed": "Could not download the workflow",
+        "comfy_text_workflow_download_failed_detail": "Could not download the workflow: {}",
+        "comfy_text_workflow_file_caption": "Current ComfyUI Text workflow",
         "provider_model": "Model: {}",
         "provider_btn_select": "\u2705 Select",
         "provider_btn_api_key": "\U0001f511 API key",
         "provider_btn_model": "\U0001f9e0 Model",
-        "provider_btn_menu": "\U0001f916 AI provider",
-        "enhance_prompt_btn_menu": "\U0001f4dd Model prompts",
-        "enhance_prompts_title": '<tg-emoji emoji-id="5879780659840499724">\U0001f4dd</tg-emoji> Model prompts',
+        "provider_btn_menu": "\U0001f916 AI models",
         "enhance_prompt_current_url": "URL: {}",
+        "enhance_prompt_section": "<b>\U0001f4dd Model prompt</b>",
         "enhance_prompt_source": "Source: {}",
         "enhance_prompt_source_default": "default",
         "enhance_prompt_source_custom": "custom",
@@ -1038,6 +1137,21 @@ class ComfyImageGenMod(loader.Module):
         "wf_check_frames": "Frames",
         "wf_check_fps": "FPS",
         "ult_title": '<tg-emoji emoji-id="4904936030232117798">\u2699\ufe0f</tg-emoji> Additional settings',
+        "ult_autodelete_title": "Result auto-delete",
+        "ult_autodelete_status": "Auto-delete: {}",
+        "ult_autodelete_delay": "Delay: {}",
+        "ult_autodelete_input": "Enter delay in seconds (5-86400):",
+        "ult_btn_autodelete": "Auto-delete",
+        "ult_btn_autodelete_delay": "Set delay",
+        "ult_trigger_generation_menu": "Generation",
+        "ult_trigger_generation_title": "Trigger generation",
+        "ult_trigger_model_title": "Trigger model",
+        "ult_trigger_loras_title": "Trigger LoRAs",
+        "ult_trigger_model_default_choice": "Use default model",
+        "ult_trigger_model_manual": "Enter model name",
+        "ult_trigger_model_input": "Enter model filename:",
+        "ult_trigger_lora_weight_input": "Enter LoRA weight (0.1-2.0):",
+        "ult_trigger_loras_clear": "Clear LoRAs",
         "ult_ai_title": '<tg-emoji emoji-id="5188678912883827293">\U0001f916</tg-emoji> AI enhancement',
         "ult_ai_auto": "Auto enhancement: {}",
         "ult_ai_prompt_confirm": "Prompt confirmation: {}",
@@ -1055,6 +1169,8 @@ class ComfyImageGenMod(loader.Module):
         "ult_trigger_desc": "Generate images when a message starts with the trigger word in this chat.",
         "ult_time_title": '<tg-emoji emoji-id="5870921681735781843">\u23f1</tg-emoji> Generation time',
         "ult_theme_title": '<tg-emoji emoji-id="5764779661028495989">\U0001f3a8</tg-emoji> Emoji theme',
+        "ult_extra_title": "Additional settings",
+        "ult_auto_model_status": "Automatically switch model: {}",
         "ult_theme_status": "Emoji theme: {}",
         "ult_censorship_status": "Censorship: {}",
         "ult_btn_censorship_on": "\U0001f910 Censorship Enabled",
@@ -1067,15 +1183,23 @@ class ComfyImageGenMod(loader.Module):
         "ult_trigger_delay": "Auto-delete after: {}",
         "ult_trigger_queue": "Max queue: {}",
         "ult_trigger_steps_limit": "Max steps: {}",
+        "ult_trigger_workflow": "Workflow: <code>{}</code>",
+        "ult_trigger_workflow_default": "Module default: {}",
         "ult_trigger_active": "Active now: {}",
         "ult_trigger_russian_guard": "Reject Russian prompt without -ai: {}",
+        "ult_trigger_auto_translate": "Automatically translate prompt to English: {}",
+        "ult_trigger_cloud_skip_confirm": "Cloud trigger without confirmation: {}",
         "ult_trigger_blacklist": "Blacklist: <code>{}</code>",
         "ult_trigger_word_input": "Enter trigger word:",
         "ult_trigger_delay_input": "Enter auto-delete time in seconds:",
         "ult_trigger_queue_input": "Enter max queue size:",
         "ult_trigger_steps_input": "Enter trigger max steps (1-100):",
         "ult_trigger_saved": "Trigger settings updated",
+        "ult_trigger_workflow_set": "Workflow for this chat's trigger: {}",
+        "ult_trigger_workflow_default_set": "This chat's trigger will use the module default workflow.",
+        "ult_trigger_workflow_title": '<tg-emoji emoji-id="5444965220663458467">📁</tg-emoji> Select trigger workflow',
         "ult_trigger_reject_russian": "Block Russian prompt",
+        "ult_trigger_translate": "Translate to English",
         "ult_trigger_blacklist_empty": "Trigger blacklist is empty.",
         "ult_trigger_blacklist_title": "<b>Trigger blacklist</b>",
         "ult_trigger_blacklist_added": "User added to trigger blacklist.",
@@ -1083,6 +1207,7 @@ class ComfyImageGenMod(loader.Module):
         "ult_trigger_blacklist_no_user": "Reply to a user or specify @username/user id.",
         "ult_btn_trigger_blacklist": "🚫 Blacklist",
         "trigger_russian_requires_ai": "<emoji document_id=5121063440311386962>👎</emoji> Trigger generation with Russian prompt is allowed only with -ai.",
+        "translation_failed": "<emoji document_id=5121063440311386962>👎</emoji> Could not translate the prompt. Try again later.",
         "trigger_too_often": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Too often.",
         "ult_status_on": '<tg-emoji emoji-id="5206607081334906820">\u2705</tg-emoji> Enabled',
         "ult_status_off": '<tg-emoji emoji-id="5121063440311386962">\u274c</tg-emoji> Disabled',
@@ -1091,6 +1216,8 @@ class ComfyImageGenMod(loader.Module):
         "ult_btn_trigger": "\u26a1 Trigger generation",
         "ult_btn_time": "\u23f1 Generation time",
         "ult_btn_theme": "Theme",
+        "ult_btn_extra": "Additional settings",
+        "ult_btn_auto_model": "Automatically switch model",
         "ult_btn_tunnel_notify": "Tunnel notify",
         "ult_btn_update_assets": "Update assets",
         "ult_assets_update_started": "Asset update started.",
@@ -1153,8 +1280,11 @@ class ComfyImageGenMod(loader.Module):
         "ult_btn_time_result": "\u23f1 Result",
         "ult_btn_trigger_word": "\u270d Trigger word",
         "ult_btn_trigger_delay": "\u23f1 Delete time",
+        "ult_btn_trigger_delay_short": "⏱ Time",
         "ult_btn_trigger_queue": "\U0001f4e6 Queue",
         "ult_btn_trigger_steps": "\U0001f3a8 Steps limit",
+        "ult_btn_trigger_workflow": "📁 Workflow",
+        "ult_btn_trigger_cloud_skip_confirm": "⚡ Cloud without confirmation",
         "ult_btn_create_chat": "\U0001f3d7 Create archive",
         "ult_btn_recreate_chat": "\U0001f504 Add archive",
         "ult_btn_bind_chat": "\U0001f517 Bind archive",
@@ -1192,9 +1322,9 @@ class ComfyImageGenMod(loader.Module):
         "cshare_done": "<emoji document_id=5206607081334906820>\u2705</emoji> Sent to @ComfyIdeas.",
         "cshare_top_unavailable": "<emoji document_id=5121063440311386962>👎</emoji> ComfyIdeas top is unavailable.",
         "cshare_direct_unavailable": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Open https://t.me/comfyideas?direct, send any message there once, then run <code>.cshare</code> again.",
-        "cshare_unknown_workflow": "Неизвестно",
-        "cshare_author": "Автор: {}",
-        "cshare_author_anon": "анонимно",
+        "cshare_unknown_workflow": "Unknown",
+        "cshare_author": "Author: {}",
+        "cshare_author_anon": "anonymous",
         "cshare_preview_title": '<tg-emoji emoji-id="5444965220663458467">\U0001f4c1</tg-emoji> ComfyIdeas preview',
         "cshare_preview_expired": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Preview expired. Run <code>.cshare</code> again.",
         "cshare_preview_cancelled": "<emoji document_id=5206607081334906820>\u2705</emoji> ComfyIdeas submission cancelled.",
@@ -1238,6 +1368,38 @@ class ComfyImageGenMod(loader.Module):
     }
 
     strings_ru = {
+        "add_wf_cloud_share_bad": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Ссылка Comfy Cloud некорректна или недоступна.",
+        "add_wf_cloud_share_loading": "<emoji document_id=4904936030232117798>\u2699\ufe0f</emoji> Загружаю общий воркфлоу Comfy Cloud...",
+        "lora_filter_imported": "\U0001f4e5 \u0418\u043c\u043f\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0435",
+        "lora_no_imported": "\u0418\u043c\u043f\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0435 LoRA \u043f\u043e\u043a\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u044b.",
+        "lora_civitai_input": "\u0412\u0432\u0435\u0434\u0438\u0442\u0435 ID \u043c\u043e\u0434\u0435\u043b\u0438/\u0432\u0435\u0440\u0441\u0438\u0438 Civitai \u0438\u043b\u0438 \u0441\u0441\u044b\u043b\u043a\u0443 \u043d\u0430 \u043c\u043e\u0434\u0435\u043b\u044c:",
+        "lora_civitai_saved": "\u041c\u0435\u0442\u0430\u0434\u0430\u043d\u043d\u044b\u0435 Civitai \u0437\u0430\u0433\u0440\u0443\u0436\u0435\u043d\u044b",
+        "lora_civitai_failed": "\u041c\u043e\u0434\u0435\u043b\u044c \u0438\u043b\u0438 \u0432\u0435\u0440\u0441\u0438\u044f Civitai \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u0430.",
+        "lora_civitai_base_model": "\u0411\u0430\u0437\u043e\u0432\u0430\u044f \u043c\u043e\u0434\u0435\u043b\u044c: {}",
+        "lora_cloud_unavailable": "Cloud \u0441\u0435\u0439\u0447\u0430\u0441 \u043d\u0435 \u043e\u0442\u0434\u0430\u0451\u0442 \u044d\u0442\u0438 LoRA \u0432 \u0441\u043f\u0438\u0441\u043e\u043a \u0434\u043b\u044f \u0432\u043e\u0440\u043a\u0444\u043b\u043e\u0443: {}",
+        "provider_comfy_text_error": "\u041e\u0448\u0438\u0431\u043a\u0430 ComfyUI Text: <code>{}</code>",
+        "comfy_text_workflow_download_failed_detail": "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0432\u044b\u0433\u0440\u0443\u0437\u0438\u0442\u044c \u0432\u043e\u0440\u043a\u0444\u043b\u043e\u0443: {}",
+        "provider_comfy_text_invalid_workflow": "\u0412\u043e\u0440\u043a\u0444\u043b\u043e\u0443 ComfyUI Text \u0434\u043e\u043b\u0436\u0435\u043d \u0441\u043e\u0434\u0435\u0440\u0436\u0430\u0442\u044c USER_PROMPT, TARGET_MODEL \u0438 \u0432\u044b\u0445\u043e\u0434 PreviewAny.",
+        "comfy_text_workflow_section": '<b><tg-emoji emoji-id="5444965220663458467">\U0001f4c1</tg-emoji> \u0422\u0435\u043a\u0441\u0442\u043e\u0432\u044b\u0439 \u0432\u043e\u0440\u043a\u0444\u043b\u043e\u0443</b>',
+        "comfy_text_workflow_source": "\u0418\u0441\u0442\u043e\u0447\u043d\u0438\u043a: {}",
+        "comfy_text_workflow_current_url": "URL: {}",
+        "comfy_text_workflow_source_default": "\u0434\u0435\u0444\u043e\u043b\u0442",
+        "comfy_text_workflow_source_custom": "\u0441\u0432\u043e\u0439",
+        "comfy_text_workflow_btn_set": "\u270d \u0412\u043f\u0438\u0441\u0430\u0442\u044c \u0441\u0441\u044b\u043b\u043a\u0443",
+        "comfy_text_workflow_btn_reset": "\U0001f504 \u0412\u0435\u0440\u043d\u0443\u0442\u044c \u0434\u0435\u0444\u043e\u043b\u0442",
+        "comfy_text_workflow_btn_download": "\U0001f4c4 \u0412\u044b\u0433\u0440\u0443\u0437\u0438\u0442\u044c",
+        "comfy_text_workflow_input_url": "\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u0441\u0441\u044b\u043b\u043a\u0443 \u043d\u0430 \u0432\u043e\u0440\u043a\u0444\u043b\u043e\u0443 ComfyUI Text:",
+        "comfy_text_workflow_saved": "\u0421\u0441\u044b\u043b\u043a\u0430 \u043d\u0430 \u0432\u043e\u0440\u043a\u0444\u043b\u043e\u0443 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u0430",
+        "comfy_text_workflow_reset": "\u0421\u0441\u044b\u043b\u043a\u0430 \u0441\u0431\u0440\u043e\u0448\u0435\u043d\u0430 \u043d\u0430 \u0434\u0435\u0444\u043e\u043b\u0442",
+        "comfy_text_workflow_invalid_url": "\u041d\u0435\u043a\u043e\u0440\u0440\u0435\u043a\u0442\u043d\u0430\u044f \u0441\u0441\u044b\u043b\u043a\u0430 \u043d\u0430 \u0432\u043e\u0440\u043a\u0444\u043b\u043e\u0443",
+        "comfy_text_workflow_download_failed": "\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0432\u044b\u0433\u0440\u0443\u0437\u0438\u0442\u044c \u0432\u043e\u0440\u043a\u0444\u043b\u043e\u0443",
+        "comfy_text_workflow_file_caption": "\u0422\u0435\u043a\u0443\u0449\u0438\u0439 \u0432\u043e\u0440\u043a\u0444\u043b\u043e\u0443 ComfyUI Text",
+        "provider_api_key_not_required": "\u043d\u0435 \u0442\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044f",
+        "provider_comfy_text_info": "\u0420\u0430\u0431\u043e\u0442\u0430\u0435\u0442 \u0447\u0435\u0440\u0435\u0437 \u0430\u043a\u0442\u0438\u0432\u043d\u044b\u0439 ComfyUI-\u0431\u044d\u043a\u0435\u043d\u0434; \u0432\u043d\u0435\u0448\u043d\u0438\u0439 API-\u043a\u043b\u044e\u0447 \u043d\u0435 \u043d\u0443\u0436\u0435\u043d.",
+        "provider_comfy_text_template": "\u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u044e\u0442\u0441\u044f \u0438\u043d\u0441\u0442\u0440\u0443\u043a\u0446\u0438\u044f \u0432\u043e\u0440\u043a\u0444\u043b\u043e\u0443 \u0438 \u0434\u0438\u043d\u0430\u043c\u0438\u0447\u0435\u0441\u043a\u0438\u0435 \u043c\u0430\u0440\u043a\u0435\u0440\u044b USER_PROMPT/TARGET_MODEL.",
+        "provider_comfy_text_unavailable": "ComfyUI Text \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d. \u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 \u043d\u0430\u043b\u0438\u0447\u0438\u0435 CLIPLoader, TextGenerate, PreviewAny \u0438 \u0442\u0435\u043a\u0441\u0442\u043e\u0432\u043e\u0439 \u043c\u043e\u0434\u0435\u043b\u0438.",
+        "provider_comfy_text_empty": "ComfyUI Text \u0432\u0435\u0440\u043d\u0443\u043b \u043f\u0443\u0441\u0442\u043e\u0439 \u043e\u0442\u0432\u0435\u0442. \u041f\u043e\u0432\u0442\u043e\u0440\u0438\u0442\u0435 \u043f\u043e\u043f\u044b\u0442\u043a\u0443 \u0438\u043b\u0438 \u043f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 \u0432\u043e\u0440\u043a\u0444\u043b\u043e\u0443/\u043c\u043e\u0434\u0435\u043b\u044c.",
+        "provider_comfy_text_failed": "ComfyUI Text \u043d\u0435 \u0441\u043c\u043e\u0433 \u0443\u043b\u0443\u0447\u0448\u0438\u0442\u044c \u043f\u0440\u043e\u043c\u043f\u0442. \u041f\u0440\u043e\u0432\u0435\u0440\u044c\u0442\u0435 \u043e\u0447\u0435\u0440\u0435\u0434\u044c ComfyUI \u0438 \u043b\u043e\u0433\u0438 \u0441\u0435\u0440\u0432\u0435\u0440\u0430.",
         "name": "ComfyImageGen",
         "cfg_url": "Базовый URL ComfyUI (например: http://127.0.0.1:8188)",
         "cfg_backend": "Режим ComfyUI: local или cloud",
@@ -1245,19 +1407,50 @@ class ComfyImageGenMod(loader.Module):
         "cfg_model": "Файл модели по умолчанию (например: waiIllustriousSDXL_v170)",
         "cfg_max_mb": "Макс. размер входного изображения в МБ для img2img",
         "cfg_max_output_mb": "Макс. размер результата в МБ",
+        "cfg_max_image_pixels": "Макс. число пикселей для изображений, отправляемых как фото Telegram. 0 отключает лимит",
         "cfg_output_format": "Формат отправки результата: photo (сжатое изображение Telegram), document_png (PNG файлом без потерь)",
         "cfg_ws_update_interval": "Обновление статуса генераций в секундах: 1-5, 0 отключить",
         "cfg_gemini_api_key": "API ключ(и) Gemini для AI улучшения промпта. Несколько ключей можно указать через запятую.",
         "cfg_groq_api_key": "API ключ(и) Groq для AI улучшения промпта. Несколько ключей можно указать через запятую.",
         "cfg_openrouter_api_key": "API ключ(и) OpenRouter для AI улучшения промпта. Несколько ключей можно указать через запятую.",
+        "cfg_openai_api_key": "API ключ(и) OpenAI для AI улучшения промпта. Несколько ключей можно указать через запятую.",
         "cfg_grok_api_key": "API ключ(и) Grok/xAI для AI улучшения промпта. Несколько ключей можно указать через запятую.",
         "cfg_deepseek_api_key": "API ключ(и) DeepSeek для AI улучшения промпта. Несколько ключей можно указать через запятую.",
+        "cfg_nvidiaapi_api_key": "API ключ(и) NVIDIA API для AI улучшения промпта. Несколько ключей можно указать через запятую.",
+        "cfg_qwen_api_key": "API ключ(и) Qwen (Model Studio) для AI улучшения промпта. Несколько ключей можно указать через запятую.",
+        "cfg_qwen_base_url": "OpenAI-совместимый базовый URL Qwen Model Studio. Для международного endpoint оставьте значение по умолчанию; для другого региона укажите URL своего workspace.",
         "cfg_update_assets": "Фоновое обновление ресурсов модуля в секундах. 0 отключает. Диапазон: 60-14400.",
         "cfg_info_banner_url": "URL баннера для меню ci и chelp. 0 - отключает.",
         "lora_title": '<tg-emoji emoji-id="5764779661028495989">\U0001f3a8</tg-emoji> Выбор LoRA',
         "lora_prompt_label": "Промпт",
         "lora_page": "Стр. {}/{}",
         "lora_detail_title": '<tg-emoji emoji-id="4904936030232117798">\u2699</tg-emoji> {}\nВес: {:.1f}\nСтатус: {}',
+        "lora_favorite_add": "\u2606 В избранное",
+        "lora_favorite_remove": "\u2605 Убрать из избранного",
+        "lora_filter_all": "\u2637 Все",
+        "lora_filter_favorites": "\u2605 Избранное",
+        "lora_no_favorites": "В избранном пока нет LoRA.",
+        "lora_search_btn": "\U0001f50e Поиск",
+        "lora_search_clear": "\u2716 Сбросить поиск",
+        "lora_search_input": "Введите имя LoRA или его часть:",
+        "lora_search_label": "Поиск: <code>{}</code>",
+        "lora_search_empty": "По этому запросу LoRA не найдены.",
+        "lora_note_label": "Заметка: {}",
+        "lora_note_btn": "\U0001f4dd Заметка",
+        "lora_note_delete": "\U0001f5d1 Удалить заметку",
+        "lora_note_input": "Введите заметку для этой LoRA (до 500 символов):",
+        "lora_note_saved": "Заметка LoRA сохранена",
+        "lora_note_deleted": "Заметка LoRA удалена",
+        "lora_triggers_label": "Триггеры: {}",
+        "lora_triggers_empty": "Триггеры: не заданы",
+        "lora_triggers_btn": "✍ Задать триггеры",
+        "lora_triggers_input": "Введите trigger words через запятую или с новой строки:",
+        "lora_triggers_saved": "Триггеры LoRA сохранены",
+        "lora_auto_triggers_on": "✓ Автоматически добавлять триггеры",
+        "lora_auto_triggers_off": "□ Автоматически добавлять триггеры",
+        "lora_civitai_btn": "🌐 Загрузить из Civitai",
+        "lora_apply_unsupported": "В этом workflow нет поддерживаемого узла LoRA.",
+        "lora_apply_slots": "В workflow только {} слотов LoRA, а выбрано {} моделей.",
         "lora_on": '<tg-emoji emoji-id="5206607081334906820">\u2705</tg-emoji> Включена',
         "lora_off": '<tg-emoji emoji-id="5985346521103604145">\u2b1c</tg-emoji> Выключена',
         "lora_loading": "<emoji document_id=4904936030232117798>\u2699\ufe0f</emoji> Загружаю список LoRA из ComfyUI...",
@@ -1286,6 +1479,13 @@ class ComfyImageGenMod(loader.Module):
         "mode_cloud_keys": "Cloud API ключи: {}",
         "mode_keys_set": "задано: {}",
         "mode_keys_missing": "не заданы",
+        "onboarding_title": '<tg-emoji emoji-id="5443038326535759644">👋</tg-emoji> <b>Добро пожаловать в ComfyImageGen</b>',
+        "onboarding_prompt": "Выберите, как хотите генерировать изображения:",
+        "onboarding_local": "<b>Локальный ComfyUI</b>\nЛокальная генерация, вам нужно установить ComfyUI на свой ПК, подробнее - <a href=\"https://t.me/ComfyUIGuide/3\">в гайде</a>.",
+        "onboarding_cloud": "<b>ComfyUI Cloud</b>\nГенерация по API-ключу: для комфортной работы нужны подписка Creator и модели из описания воркфлоу, скачанные в правильные папки. Остальное - <a href=\"https://t.me/comfystorage/43\">тут</a>.",
+        "onboarding_btn_local": "💻 Локальный ComfyUI",
+        "onboarding_btn_cloud": "☁️ ComfyUI Cloud",
+        "onboarding_saved": "Бекенд выбран. Открываю справку…",
         "mode_balance": "Баланс: {}",
         "mode_balance_unavailable": "недоступен",
         "mode_balance_no_key": "ключ не задан",
@@ -1332,11 +1532,15 @@ class ComfyImageGenMod(loader.Module):
         "cdown_validation_fail": '<tg-emoji emoji-id="5121063440311386962">👎</tg-emoji> Проверка: {}',
         "cdown_folder": "Папка Cloud: <code>{}</code>",
         "cdown_folder_unknown": "Папка Cloud не найдена в списке моделей; загрузку всё равно можно запустить.",
-        "cdown_result_ready": '<tg-emoji emoji-id="5206607081334906820">✅</tg-emoji> Ассет уже доступен.',
-        "cdown_result_started": '<tg-emoji emoji-id="5206607081334906820">✅</tg-emoji> Фоновая загрузка запущена.',
+        "cdown_result_ready": '<tg-emoji emoji-id="5206607081334906820">✅</tg-emoji> Модель готова: выберите её в «Мои модели».',
+        "cdown_result_started": '<tg-emoji emoji-id="5873225338984599714">📤</tg-emoji> Фоновая загрузка запущена.',
         "cdown_result_failed": '<tg-emoji emoji-id="5121063440311386962">👎</tg-emoji> Ошибка загрузки: <code>{}</code>',
+        "cdown_task": "Задача: <code>{}</code>",
+        "cdown_task_status": "Статус импорта: <code>{}</code>",
+        "cdown_task_waiting": "Модель появится в «Мои модели» после завершения задачи.",
         "cdown_btn_url": "Задать URL",
         "cdown_btn_install": "Установить",
+        "cdown_btn_refresh": "Обновить статус",
         "cdown_input_url": "Отправьте ссылку Hugging Face или Civitai для скачивания:",
         "cdown_no_key": "API ключ ComfyUI Cloud не задан. Откройте .cmode и добавьте ключ.",
         "cdown_need_url": "Сначала задайте URL.",
@@ -1344,6 +1548,26 @@ class ComfyImageGenMod(loader.Module):
         "cdown_checking": "Проверяю URL...",
         "cdown_installing": "Запускаю загрузку...",
         "cdown_bad_url": "Поддерживаются только ссылки huggingface.co, civitai.com и civitai.red.",
+        "clib_title": '<tg-emoji emoji-id="5444965220663458467">📁</tg-emoji> Библиотека моделей Cloud',
+        "clib_summary": "Моделей: <code>{}</code> · категорий: <code>{}</code>",
+        "clib_folder_title": "Категория: <code>{}</code>",
+        "clib_name": "Модель: <code>{}</code>",
+        "clib_category": "Категория: <code>{}</code>",
+        "clib_tags": "Теги: <code>{}</code>",
+        "clib_empty": "Импортированные ассеты моделей не найдены.",
+        "clib_btn_refresh": "🔄 Обновить",
+        "clib_btn_move": "Сменить категорию",
+        "clib_btn_delete": "🗑 Удалить",
+        "clib_delete_title": "Удалить модель?",
+        "clib_delete_confirm": "🗑 Удалить навсегда",
+        "clib_deleted": "Модель удалена из библиотеки Cloud.",
+        "clib_deleting": "Удаляю модель...",
+        "clib_move_title": "Выберите категорию модели",
+        "clib_loading": "Загружаю библиотеку моделей Cloud...",
+        "clib_updating": "Обновляю категорию...",
+        "clib_moved": "Категория модели обновлена.",
+        "clib_immutable": "Этот ассет неизменяемый, обновить его нельзя.",
+        "clib_no_key": "API ключ ComfyUI Cloud не задан. Откройте .cmode и добавьте ключ.",
         "cdown_type_checkpoint": "Checkpoint",
         "cdown_type_lora": "LoRA",
         "cdown_type_vae": "VAE",
@@ -1356,13 +1580,13 @@ class ComfyImageGenMod(loader.Module):
         "cdown_type_style_model": "Style Model",
         "cdown_type_model_patch": "Model Patch",
         "cdown_type_sam": "SAM",
-        "cloud_confirm_title": "ComfyUI Cloud",
+        "cloud_confirm_title": '<tg-emoji emoji-id="5839354140261619193">\U0001f6dc</tg-emoji> ComfyUI Cloud',
         "cloud_confirm_balance": "Баланс: {}",
         "cloud_confirm_cost": "Стоимость: {}",
         "cloud_confirm_cost_unavailable": "недоступно",
         "cloud_confirm_batch": "Batch: {}",
-        "cloud_confirm_workflow": "Воркфлоу: {}",
-        "cloud_confirm_model": "Модель: {}",
+        "cloud_confirm_workflow": '<tg-emoji emoji-id="5444965220663458467">\U0001f4c1</tg-emoji> Воркфлоу: {}',
+        "cloud_confirm_model": '<tg-emoji emoji-id="5206591666697306436">\U0001f36d</tg-emoji> Модель: {}',
         "cloud_confirm_prompt": "Промпт:",
         "cloud_confirm_btn_generate": "Генерировать",
         "cloud_confirm_btn_batch": "Batch: {}",
@@ -1385,9 +1609,10 @@ class ComfyImageGenMod(loader.Module):
         "unavailable": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> ComfyUI недоступен.",
         "img_too_large": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Входное изображение слишком большое (макс. {} МБ).",
         "output_too_large": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Результат слишком большой (макс. {} МБ).",
+        "image_too_many_pixels": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Изображение слишком большое для отправки фото (макс. {} МП). Отправьте его PNG-документом или уменьшите размер.",
         "no_reply_photo": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Ответьте на фото для img2img.",
         "wf_not_found": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Воркфлоу '{}' не найден. Доступные: {}",
-        "add_wf_no_reply": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Ответьте на JSON-файл для добавления воркфлоу.",
+        "add_wf_no_reply": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Ответьте на JSON-файл или укажите ссылку Comfy Cloud после имени воркфлоу.",
         "add_wf_bad_json": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Невалидный JSON-файл воркфлоу.",
         "wf_file_too_large": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> JSON воркфлоу слишком большой. Максимум: 10 МБ.",
         "add_wf_ok": "<emoji document_id=5206607081334906820>\u2705</emoji> Воркфлоу '{}' добавлен.",
@@ -1408,18 +1633,16 @@ class ComfyImageGenMod(loader.Module):
         "toast_no_cloud_wf": "Cloud workflows пока пустые.",
         "wf_list_title_builtin": '<tg-emoji emoji-id="5444965220663458467">\U0001f4c1</tg-emoji> Встроенные воркфлоу',
         "wf_list_title_custom": '<tg-emoji emoji-id="5444965220663458467">\U0001f4c1</tg-emoji> Пользовательские воркфлоу',
-        "wf_desc_anime": "Генерация аниме изображений, принимает все ill, pony, sd модели и похожие.",
-        "wf_desc_anime_v2": "Второй аниме воркфлоу, работает на модельках Anima, рекомендую MiaoMiao [https://civitai.red/models/934764/miaomiao-harem?modelVersionId=2967371]",
-        "wf_desc_zimage_turbo": "Генерация реалистичных изображений, не поддерживает i2i. Сделан под модель intorealism_zit [https://civitai.red/models/1609320/intorealism?modelVersionId=2912231], но можно попробовать и другие.",
-        "wf_desc_sdxl_real1": "Реалистичная модель на SDXL 1.0, сделано под модель mopMixtureOfPerverts_v20 [https://civitai.red/models/1854124?modelVersionId=2159501].",
-        "wf_desc_sdxl_real2": "Если вам не особо нравится SDXLReal1, то это второй реалистичный SDXL workflow, тут уже модель xxxRay_dmd2 [https://civitai.red/models/1064836/xxx-ray].",
-        "wf_desc_ernie": "Воркфлоу с новейшей моделью Ernie (На средней видюхе генерация в среднем 2-3 минуты), отлично работает с текстами, инфографикой и любыми запросами, главное хороший промпт. Используется модель RedCraft [https://civitai.red/models/958009/redcraft-or].",
-        "wf_desc_fluxedit": "Редактирование изображений для средних пк, использует Flux2-Klein",
-        "wf_desc_cloud_qwenedit": "Редактирование изображений с QwenEdit (4-15 кред/генерация)",
-        "wf_desc_cloud_ill": "Illustrious вф с wai-ill (1-2 кред/генерация)",
-        "wf_desc_cloud_zit": "ZImageTurbo вф (1-5 кред/генерация)",
-        "wf_desc_cloud_anima": "Анима вф с дефолт моделькой (1-3 кред/генерация)",
-        "wf_desc_cloud_anima2": "Анима 2 (Нужен статус Creator) (1-3 кред/генерация)",
+        "wf_desc_anime_v2": "Воркфлоу под модель MiaoMiao Harem [https://civitai.red/models/934764/miaomiao-harem?modelVersionId=3248362].",
+        "wf_desc_anime_v3": "Воркфлоу под модель MiaoMiao Harem (Anime Coloring) [https://civitai.red/models/934764/miaomiao-harem?modelVersionId=3203207].",
+        "wf_desc_ill": "Генерация аниме изображений (за основу [https://civitai.red/models/376130/nova-anime-xl?modelVersionId=2940478]).",
+        "wf_desc_krea2": "Воркфлоу под модель LUSTIFY, сильные ирл генерации/слабые аниме. [https://civitai.red/models/573152/lustify-nsfw-checkpoint?modelVersionId=3112728] (Используется 4-х квантовая модель, можете форкнуть вф чтобы использовать другую).",
+        "wf_desc_sdxl_real2": "Реалистичная модель на SDXL 1.0, сделано под модель xxxRay_dmd2 [https://civitai.red/models/1064836/xxx-ray].",
+        "wf_desc_cloud_krea2": "Клауд воркфлоу под модель LUSTIFY, сильные ирл генерации/слабые аниме. [https://civitai.red/models/573152/lustify-nsfw-checkpoint?modelVersionId=3112728] (3-5 кредитов генерация)",
+        "wf_desc_cloud_anima": "Клауд воркфлоу под модель MiaoMiao Harem [https://civitai.red/models/934764/miaomiao-harem?modelVersionId=3248362]. (2-4 кредита генерация).",
+        "wf_desc_cloud_anima2": "Клауд воркфлоу под модель MiaoMiao Harem, но с аниме колорингом [https://civitai.red/models/934764/miaomiao-harem?modelVersionId=3203207]. (2-4 кредита генерация).",
+        "wf_desc_cloud_ill": "Клауд генерация аниме изображений (за основу [https://civitai.red/models/376130/nova-anime-xl?modelVersionId=2940478]) (2-4 кред/генерация).",
+        "wf_desc_cloud_qwen": "Редактирование изображений (За основу модель [https://huggingface.co/Phr00t/Qwen-Image-Edit-Rapid-AIO/blob/main/v11/Qwen-Rapid-AIO-NSFW-v11.1.safetensors]) (4-7 кред/генерация).",
         "wf_page": "Стр. {}/{}",
         "wf_current": "Текущий: {}",
         "wf_limited_hint": 'Второе нажатие по воркфлоу включает <tg-emoji emoji-id="5271842287326863410">🔵</tg-emoji> ограниченный режим, для изменения становятся доступны только инпуты позитивного, негативного промпта и медиа. Функция в бете, сделано в основном под генерацию видео',
@@ -1463,8 +1686,15 @@ class ComfyImageGenMod(loader.Module):
         "models_page": "Стр. {}/{}",
         "models_set": "<emoji document_id=5206607081334906820>\u2705</emoji> Модель установлена: {}",
         "models_empty": "<emoji document_id=5121063440311386962>\U0001f44e</emoji> Checkpoint и UNET модели не найдены.",
+        "models_load_failed": "Не удалось загрузить модели ComfyUI. Попробуйте ещё раз позже.",
+        "inline_update_failed": "Не удалось обновить меню. Откройте его заново.",
         "models_manual_btn": "\u270f\ufe0f Ввести вручную",
         "models_manual_input": "Введите имя файла модели:",
+        "models_search_btn": "\U0001f50e Поиск",
+        "models_search_clear": "\u2716 Сбросить поиск",
+        "models_search_input": "Введите имя модели или его часть:",
+        "models_search_label": "Поиск: <code>{}</code>",
+        "models_search_empty": "По этому запросу модели не найдены.",
         "models_as_workflow_btn": "Как в воркфлоу",
         "models_as_workflow": "Cloud модель: как в воркфлоу ({})",
         "toast_model_as_workflow": "Cloud модель: как в воркфлоу",
@@ -1565,7 +1795,8 @@ class ComfyImageGenMod(loader.Module):
         "argset_choice_saved": "Сохранено: {}",
         "argset_pin_model": "📌 Закрепить для модели",
         "argset_pin_model_ok": "Закреплено для модели: {}",
-        "provider_title": '<tg-emoji emoji-id="5188678912883827293">\U0001f916</tg-emoji> Провайдер ИИ-улучшения',
+        "provider_title": '<tg-emoji emoji-id="5188678912883827293">\U0001f916</tg-emoji> ИИ-модели и промпты',
+        "provider_menu_intro": "Выберите провайдера, чтобы настроить модель, API-ключ и промпт улучшения.",
         "provider_current": "Текущий: {}",
         "provider_status": "Статус: {}",
         "provider_selected": '<tg-emoji emoji-id="5206607081334906820">\u2705</tg-emoji> Выбран',
@@ -1577,10 +1808,9 @@ class ComfyImageGenMod(loader.Module):
         "provider_btn_select": "\u2705 Выбрать",
         "provider_btn_api_key": "\U0001f511 API ключ",
         "provider_btn_model": "\U0001f9e0 Модель",
-        "provider_btn_menu": "\U0001f916 ИИ-провайдер",
-        "enhance_prompt_btn_menu": "\U0001f4dd Промпты для моделей",
-        "enhance_prompts_title": '<tg-emoji emoji-id="5879780659840499724">\U0001f4dd</tg-emoji> Промпты для моделей',
+        "provider_btn_menu": "\U0001f916 ИИ-модели",
         "enhance_prompt_current_url": "URL: {}",
+        "enhance_prompt_section": "<b>\U0001f4dd Промпт для модели</b>",
         "enhance_prompt_source": "Источник: {}",
         "enhance_prompt_source_default": "дефолт",
         "enhance_prompt_source_custom": "свой",
@@ -1752,6 +1982,21 @@ class ComfyImageGenMod(loader.Module):
         "wf_check_denoise": "Denoise",
         "wf_check_img2img": "Img2Img input",
         "ult_title": '<tg-emoji emoji-id="4904936030232117798">\u2699\ufe0f</tg-emoji> Дополнительные настройки/функции',
+        "ult_autodelete_title": "\u0410\u0432\u0442\u043e\u0443\u0434\u0430\u043b\u0435\u043d\u0438\u0435 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u0430",
+        "ult_autodelete_status": "\u0410\u0432\u0442\u043e\u0443\u0434\u0430\u043b\u0435\u043d\u0438\u0435: {}",
+        "ult_autodelete_delay": "\u0417\u0430\u0434\u0435\u0440\u0436\u043a\u0430: {}",
+        "ult_autodelete_input": "\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u0437\u0430\u0434\u0435\u0440\u0436\u043a\u0443 \u0432 \u0441\u0435\u043a\u0443\u043d\u0434\u0430\u0445 (5\u201386400):",
+        "ult_btn_autodelete": "\u0410\u0432\u0442\u043e\u0443\u0434\u0430\u043b\u0435\u043d\u0438\u0435",
+        "ult_btn_autodelete_delay": "\u0417\u0430\u0434\u0435\u0440\u0436\u043a\u0430",
+        "ult_trigger_generation_menu": "\u0413\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u044f",
+        "ult_trigger_generation_title": "\u0413\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u044f \u043f\u043e \u0442\u0440\u0438\u0433\u0433\u0435\u0440\u0443",
+        "ult_trigger_model_title": "\u041c\u043e\u0434\u0435\u043b\u044c \u0442\u0440\u0438\u0433\u0433\u0435\u0440\u0430",
+        "ult_trigger_loras_title": "LoRA \u0442\u0440\u0438\u0433\u0433\u0435\u0440\u0430",
+        "ult_trigger_model_default_choice": "Использовать модель по умолчанию",
+        "ult_trigger_model_manual": "\u0412\u0432\u0435\u0441\u0442\u0438 \u0438\u043c\u044f \u043c\u043e\u0434\u0435\u043b\u0438",
+        "ult_trigger_model_input": "\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u0438\u043c\u044f \u0444\u0430\u0439\u043b\u0430 \u043c\u043e\u0434\u0435\u043b\u0438:",
+        "ult_trigger_lora_weight_input": "\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u0432\u0435\u0441 LoRA (0.1\u20132.0):",
+        "ult_trigger_loras_clear": "\u041e\u0447\u0438\u0441\u0442\u0438\u0442\u044c LoRA",
         "ult_ai_title": '<tg-emoji emoji-id="5188678912883827293">\U0001f916</tg-emoji> ИИ-улучшение',
         "ult_ai_auto": "Автоулучшение: {}",
         "ult_ai_prompt_confirm": "Подтверждение промпта: {}",
@@ -1769,6 +2014,8 @@ class ComfyImageGenMod(loader.Module):
         "ult_trigger_desc": "Генерировать изображения, когда сообщение начинается с триггер-слова в этом чате.",
         "ult_time_title": '<tg-emoji emoji-id="5870921681735781843">\u23f1</tg-emoji> Время генерации',
         "ult_theme_title": '<tg-emoji emoji-id="5764779661028495989">\U0001f3a8</tg-emoji> Тема эмодзи',
+        "ult_extra_title": "Доп настройки",
+        "ult_auto_model_status": "Автоматически переключать модель: {}",
         "ult_theme_status": "Тема эмодзи: {}",
         "ult_censorship_status": "Цензура: {}",
         "ult_btn_censorship_on": "\U0001f910 Цензура Включена",
@@ -1781,15 +2028,23 @@ class ComfyImageGenMod(loader.Module):
         "ult_trigger_delay": "Автоудаление через: {}",
         "ult_trigger_queue": "Макс. очередь: {}",
         "ult_trigger_steps_limit": "Макс. steps: {}",
+        "ult_trigger_workflow": "Воркфлоу: <code>{}</code>",
+        "ult_trigger_workflow_default": "По умолчанию модуля: {}",
         "ult_trigger_active": "Активно сейчас: {}",
         "ult_trigger_russian_guard": "Запрет русского промпта без -ai: {}",
+        "ult_trigger_auto_translate": "Автоматически переводить промпт на английский: {}",
+        "ult_trigger_cloud_skip_confirm": "Триггер Cloud без подтверждения: {}",
         "ult_trigger_blacklist": "Блэклист: <code>{}</code>",
         "ult_trigger_word_input": "Введите триггер-слово:",
         "ult_trigger_delay_input": "Введите время автоудаления в секундах:",
         "ult_trigger_queue_input": "Введите максимум очереди:",
         "ult_trigger_steps_input": "Введите максимум steps для триггера (1-100):",
         "ult_trigger_saved": "Настройки триггера обновлены",
+        "ult_trigger_workflow_set": "Воркфлоу для триггера этого чата: {}",
+        "ult_trigger_workflow_default_set": "Триггер этого чата будет использовать воркфлоу модуля по умолчанию.",
+        "ult_trigger_workflow_title": '<tg-emoji emoji-id="5444965220663458467">📁</tg-emoji> Выбор воркфлоу триггера',
         "ult_trigger_reject_russian": "Блокировать русский промпт",
+        "ult_trigger_translate": "Переводить на английский",
         "ult_trigger_blacklist_empty": "Блэклист триггеров пуст.",
         "ult_trigger_blacklist_title": "<b>Блэклист триггеров</b>",
         "ult_trigger_blacklist_added": "Пользователь добавлен в блэклист триггеров.",
@@ -1797,6 +2052,7 @@ class ComfyImageGenMod(loader.Module):
         "ult_trigger_blacklist_no_user": "Ответьте на пользователя или укажите @username/id.",
         "ult_btn_trigger_blacklist": "🚫 Блэклист",
         "trigger_russian_requires_ai": "<emoji document_id=5121063440311386962>👎</emoji> Для генерации по триггеру русский промпт разрешён только с -ai.",
+        "translation_failed": "<emoji document_id=5121063440311386962>👎</emoji> Не удалось перевести промпт. Попробуйте позже.",
         "ult_status_on": '<tg-emoji emoji-id="5206607081334906820">\u2705</tg-emoji> Включено',
         "ult_status_off": '<tg-emoji emoji-id="5121063440311386962">\u274c</tg-emoji> Выключено',
         "ult_btn_prompt": "\U0001f916 Подтверждение промпта",
@@ -1804,6 +2060,8 @@ class ComfyImageGenMod(loader.Module):
         "ult_btn_trigger": "\u26a1 Генерация по триггеру",
         "ult_btn_time": "\u23f1 Время генерации",
         "ult_btn_theme": "Тема",
+        "ult_btn_extra": "Доп настройки",
+        "ult_btn_auto_model": "Автоматически переключать модель",
         "ult_btn_tunnel_notify": "Уведомления о туннеле",
         "ult_btn_update_assets": "Обновить ассеты",
         "ult_assets_update_started": "Обновление ассетов запущено.",
@@ -1866,8 +2124,11 @@ class ComfyImageGenMod(loader.Module):
         "ult_btn_time_result": "\u23f1 В результате",
         "ult_btn_trigger_word": "\u270d Триггер-слово",
         "ult_btn_trigger_delay": "\u23f1 Время удаления",
+        "ult_btn_trigger_delay_short": "⏱ Время",
         "ult_btn_trigger_queue": "\U0001f4e6 Очередь",
         "ult_btn_trigger_steps": "\U0001f3a8 Лимит steps",
+        "ult_btn_trigger_workflow": "📁 Воркфлоу",
+        "ult_btn_trigger_cloud_skip_confirm": "⚡ Cloud без подтверждения",
         "ult_btn_create_chat": "\U0001f3d7 Создать архив",
         "ult_btn_recreate_chat": "\U0001f504 Добавить архив",
         "ult_btn_bind_chat": "\U0001f517 Привязать архив",
@@ -1953,6 +2214,11 @@ class ComfyImageGenMod(loader.Module):
         "wf_check_input_kind": "Input kind: {}",
         "wf_check_frames": "Frames",
         "wf_check_fps": "FPS",
+        "album_picker_title": "<b>Выберите изображение из коллажа</b>",
+        "album_picker_desc": "В коллаже <code>{}</code> изображений.",
+        "album_picker_button": "Фото {}",
+        "album_picker_expired": "Выбор изображения устарел. Запустите команду ещё раз.",
+        "album_picker_unavailable": "Не удалось загрузить выбранное изображение из коллажа.",
     }
     def __init__(self):
         self.config = loader.ModuleConfig(
@@ -1993,6 +2259,12 @@ class ComfyImageGenMod(loader.Module):
                 validator=loader.validators.Integer(minimum=1, maximum=2000),
             ),
             loader.ConfigValue(
+                "max_image_pixels",
+                40000000,
+                lambda: self.strings("cfg_max_image_pixels"),
+                validator=loader.validators.Integer(minimum=0, maximum=400000000),
+            ),
+            loader.ConfigValue(
                 "output_format",
                 "photo",
                 lambda: self.strings("cfg_output_format"),
@@ -2000,7 +2272,7 @@ class ComfyImageGenMod(loader.Module):
             ),
             loader.ConfigValue(
                 "ws_update_interval",
-                2,
+                1,
                 lambda: self.strings("cfg_ws_update_interval"),
                 validator=loader.validators.Integer(minimum=0, maximum=5),
             ),
@@ -2023,6 +2295,12 @@ class ComfyImageGenMod(loader.Module):
                 validator=loader.validators.Hidden(),
             ),
             loader.ConfigValue(
+                "openai_api_key",
+                "",
+                lambda: self.strings("cfg_openai_api_key"),
+                validator=loader.validators.Hidden(),
+            ),
+            loader.ConfigValue(
                 "grok_api_key",
                 "",
                 lambda: self.strings("cfg_grok_api_key"),
@@ -2033,6 +2311,24 @@ class ComfyImageGenMod(loader.Module):
                 "",
                 lambda: self.strings("cfg_deepseek_api_key"),
                 validator=loader.validators.Hidden(),
+            ),
+            loader.ConfigValue(
+                "nvidiaapi_api_key",
+                "",
+                lambda: self.strings("cfg_nvidiaapi_api_key"),
+                validator=loader.validators.Hidden(),
+            ),
+            loader.ConfigValue(
+                "qwen_api_key",
+                "",
+                lambda: self.strings("cfg_qwen_api_key"),
+                validator=loader.validators.Hidden(),
+            ),
+            loader.ConfigValue(
+                "qwen_base_url",
+                _QWEN_DEFAULT_BASE_URL,
+                lambda: self.strings("cfg_qwen_base_url"),
+                validator=loader.validators.String(),
             ),
             loader.ConfigValue(
                 "update_assets",
@@ -2053,25 +2349,23 @@ class ComfyImageGenMod(loader.Module):
         self._enhance_system_prompts = {}
         self._impact_wildcard_select_text = None
         self._BUILTIN_WORKFLOWS = (
-            _ERNIE_WORKFLOW_NAME,
-            _FLUX_EDIT_WORKFLOW_NAME,
-            _SDXL_REAL1_WORKFLOW_NAME,
             _SDXL_REAL2_WORKFLOW_NAME,
-            _ANIME_WORKFLOW_NAME,
             _ANIME_V2_WORKFLOW_NAME,
-            _Z_IMAGE_TURBO_WORKFLOW_NAME,
+            _ANIME_V3_WORKFLOW_NAME,
+            _ILL_WORKFLOW_NAME,
+            _KREA2_WORKFLOW_NAME,
         )
         self._CLOUD_WORKFLOWS = (
-            _CLOUD_ANIMA2_WORKFLOW_NAME,
-            _CLOUD_QWEN_EDIT_WORKFLOW_NAME,
-            _CLOUD_ILL_WORKFLOW_NAME,
-            _CLOUD_ZIT_WORKFLOW_NAME,
+            _CLOUD_KREA2_WORKFLOW_NAME,
             _CLOUD_ANIMA_WORKFLOW_NAME,
+            _CLOUD_ANIMA2_WORKFLOW_NAME,
+            _CLOUD_ILL_WORKFLOW_NAME,
+            _CLOUD_QWEN_WORKFLOW_NAME,
         )
         self._available_sam_models = None
         self._lora_states = TTLCache(maxsize=50, ttl=600)
-        self._models_page_cache = TTLCache(maxsize=50, ttl=300)
-        self._wf_page_cache = TTLCache(maxsize=50, ttl=300)
+        self._models_page_cache = TTLCache(maxsize=100, ttl=3600)
+        self._wf_page_cache = TTLCache(maxsize=100, ttl=3600)
         self._addwf_force_states = TTLCache(maxsize=20, ttl=1800)
         self._cancel_flags = TTLCache(maxsize=100, ttl=600)
         self._generation_runtime = TTLCache(maxsize=100, ttl=7200)
@@ -2082,9 +2376,12 @@ class ComfyImageGenMod(loader.Module):
         self._argset_lora_states = TTLCache(maxsize=20, ttl=1800)
         self._cshare_preview_states = TTLCache(maxsize=30, ttl=900)
         self._ctools_states = TTLCache(maxsize=30, ttl=600)
+        self._album_picker_states = TTLCache(maxsize=50, ttl=600)
         self._cdown_states = TTLCache(maxsize=30, ttl=1800)
+        self._clib_states = TTLCache(maxsize=20, ttl=1800)
         self._emoji_theme_pending = TTLCache(maxsize=30, ttl=300)
         self._cdown_watch_tasks = {}
+        self._cdown_lora_metadata_tasks = set()
         self._cloud_balance_cache = TTLCache(maxsize=10, ttl=60)
         self._cloud_prompt_keys = TTLCache(maxsize=200, ttl=7200)
         self._active_cloud_api_key = contextvars.ContextVar("comfyimagegen_cloud_api_key", default=None)
@@ -2095,11 +2392,13 @@ class ComfyImageGenMod(loader.Module):
         self._trigger_generation_cooldowns = TTLCache(maxsize=1000, ttl=10)
         self._trigger_rate_limit_cooldowns = TTLCache(maxsize=1000, ttl=10)
         self._trigger_unavailable_cooldowns = TTLCache(maxsize=1000, ttl=180)
+        self._translation_cache = TTLCache(maxsize=500, ttl=3600)
         self._genai_client = None
         self._genai_api_key = None
         self._active_generations = 0
         self._unloading = False
         self._archive_semaphore = asyncio.Semaphore(1)
+        self._image_processing_semaphore = asyncio.Semaphore(1)
         self._archive_tasks = set()
         self._archive_target_ok = TTLCache(maxsize=50, ttl=600)
         self._last_builtin_wf_retry = {}
@@ -2110,6 +2409,7 @@ class ComfyImageGenMod(loader.Module):
         self._startup_update_check_task = None
         self._assets_update_task = None
         self._input_cleanup_task = None
+        self._onboarding_task = None
         self._tunnel_watch_task = None
         self._tunnel_watch_token = uuid.uuid4().hex
         self._tunnel_failed_checks = 0
@@ -2298,17 +2598,23 @@ class ComfyImageGenMod(loader.Module):
     def _session_post(self, *args, **kwargs):
         return self._ensure_session().post(*args, **kwargs)
 
+    def _session_put(self, *args, **kwargs):
+        return self._ensure_session().put(*args, **kwargs)
+
+    def _session_delete(self, *args, **kwargs):
+        return self._ensure_session().delete(*args, **kwargs)
+
     def _session_ws_connect(self, *args, **kwargs):
         return self._ensure_session().ws_connect(*args, **kwargs)
 
     def _builtin_workflow_cache_key(self, wf_name):
-        return "builtin_anime_wf" if wf_name == _ANIME_WORKFLOW_NAME else f"builtin_wf_{wf_name}"
+        return f"builtin_wf_{wf_name}"
 
     def _builtin_workflow_version_key(self, wf_name):
-        return "builtin_anime_wf_version" if wf_name == _ANIME_WORKFLOW_NAME else f"builtin_wf_version_{wf_name}"
+        return f"builtin_wf_version_{wf_name}"
 
     def _builtin_workflow_source_key(self, wf_name):
-        return "builtin_anime_wf_source" if wf_name == _ANIME_WORKFLOW_NAME else f"builtin_wf_source_{wf_name}"
+        return f"builtin_wf_source_{wf_name}"
 
     def _all_builtin_workflows(self):
         return tuple(self._BUILTIN_WORKFLOWS) + tuple(self._CLOUD_WORKFLOWS)
@@ -2384,7 +2690,7 @@ class ComfyImageGenMod(loader.Module):
         self.set(version_key, __version__)
         self.set(source_key, source)
 
-    async def _fetch_builtin_workflow(self, wf_name=_ANIME_WORKFLOW_NAME, force=False):
+    async def _fetch_builtin_workflow(self, wf_name=_ANIME_V2_WORKFLOW_NAME, force=False):
         wf_name = self._canonical_workflow_name(wf_name)
         cache_key = self._builtin_workflow_cache_key(wf_name)
         version_key = self._builtin_workflow_version_key(wf_name)
@@ -2535,6 +2841,60 @@ class ComfyImageGenMod(loader.Module):
             return ""
         return url
 
+    def _get_comfy_text_workflow_url(self):
+        custom_url = self._normalize_enhance_prompt_url(self.get("comfy_text_workflow_url", ""))
+        return custom_url or _COMFY_TEXT_WORKFLOW_URL
+
+    def _comfy_text_workflow_is_custom(self):
+        return bool(self._normalize_enhance_prompt_url(self.get("comfy_text_workflow_url", "")))
+
+    def _set_comfy_text_workflow_url(self, url):
+        url = self._normalize_enhance_prompt_url(url)
+        if not url:
+            return False
+        self.set("comfy_text_workflow_url", url)
+        self.set("comfy_text_workflow_cache", {})
+        return True
+
+    def _reset_comfy_text_workflow_url(self):
+        self.set("comfy_text_workflow_url", "")
+        self.set("comfy_text_workflow_cache", {})
+
+    def _comfy_text_workflow_source_label(self):
+        key = "comfy_text_workflow_source_custom" if self._comfy_text_workflow_is_custom() else "comfy_text_workflow_source_default"
+        return self.strings(key)
+
+    async def _fetch_comfy_text_workflow(self, force=False):
+        url = self._get_comfy_text_workflow_url()
+        cache = self.get("comfy_text_workflow_cache", {})
+        if not isinstance(cache, dict):
+            cache = {}
+        cached_workflow = cache.get("workflow")
+        if (
+            not force
+            and cache.get("url") == url
+            and cache.get("revision") == _COMFY_TEXT_WORKFLOW_CACHE_REVISION
+            and cached_workflow
+        ):
+            return self._normalize_builtin_workflow_payload(cached_workflow)
+        try:
+            workflow = await self._fetch_builtin_workflow_from_github("comfy_text", url)
+            self.set(
+                "comfy_text_workflow_cache",
+                {
+                    "url": url,
+                    "workflow": workflow,
+                    "version": __version__,
+                    "revision": _COMFY_TEXT_WORKFLOW_CACHE_REVISION,
+                },
+            )
+            return workflow
+        except Exception as e:
+            logger.warning("Failed to fetch ComfyUI Text workflow from %s: %s", url, e)
+            if cache.get("url") == url and cached_workflow:
+                return self._normalize_builtin_workflow_payload(cached_workflow)
+            raise
+
     def _get_enhance_prompt_urls(self):
         urls = self.get("enhance_prompt_urls", {})
         if not isinstance(urls, dict):
@@ -2542,7 +2902,7 @@ class ComfyImageGenMod(loader.Module):
         normalized = {}
         for provider, url in urls.items():
             provider = str(provider or "").strip().lower()
-            if provider in self._provider_ids():
+            if provider in self._external_provider_ids():
                 url = self._normalize_enhance_prompt_url(url)
                 if url:
                     normalized[provider] = url
@@ -2552,12 +2912,14 @@ class ComfyImageGenMod(loader.Module):
 
     def _get_enhance_prompt_url(self, provider):
         provider = str(provider or "").strip().lower()
+        if not self._provider_supports_prompt_template(provider):
+            return ""
         return self._get_enhance_prompt_urls().get(provider) or _ENHANCE_PROMPT_URL
 
     def _set_enhance_prompt_url(self, provider, url):
         provider = str(provider or "").strip().lower()
         url = self._normalize_enhance_prompt_url(url)
-        if provider not in self._provider_ids() or not url:
+        if not self._provider_supports_prompt_template(provider) or not url:
             return False
         urls = self._get_enhance_prompt_urls()
         urls[provider] = url
@@ -2567,6 +2929,8 @@ class ComfyImageGenMod(loader.Module):
 
     def _reset_enhance_prompt_url(self, provider):
         provider = str(provider or "").strip().lower()
+        if not self._provider_supports_prompt_template(provider):
+            return
         urls = self._get_enhance_prompt_urls()
         urls.pop(provider, None)
         self.set("enhance_prompt_urls", urls)
@@ -2578,7 +2942,7 @@ class ComfyImageGenMod(loader.Module):
 
     async def _fetch_enhance_prompt(self, provider=None, force=False):
         provider = str(provider or self._get_prompt_provider() or "deepseek").strip().lower()
-        if provider not in self._provider_ids():
+        if provider not in self._external_provider_ids():
             provider = "deepseek"
         url = self._get_enhance_prompt_url(provider)
         cache = self._get_enhance_prompt_cache()
@@ -2824,11 +3188,16 @@ class ComfyImageGenMod(loader.Module):
                 ok = False
                 logger.warning("Failed to update ctool workflow %s: %s", tool_id, e)
         try:
-            for provider in self._provider_ids():
+            for provider in self._external_provider_ids():
                 await self._fetch_enhance_prompt(provider, force=force)
         except Exception as e:
             ok = False
             logger.warning("Failed to update enhance prompt: %s", e)
+        try:
+            await self._fetch_comfy_text_workflow(force=force)
+        except Exception as e:
+            ok = False
+            logger.warning("Failed to update ComfyUI Text workflow: %s", e)
         return ok
 
     async def _assets_update_loop(self):
@@ -3000,6 +3369,11 @@ class ComfyImageGenMod(loader.Module):
                 logger.debug("ComfyUI tunnel watcher failed: %s", e)
             await asyncio.sleep(_TUNNEL_CHECK_INTERVAL)
 
+    async def on_dlmod(self):
+        if self.get("onboarding_completed", False) or self.get("onboarding_shown", False):
+            return
+        self.set("onboarding_pending", True)
+
     async def client_ready(self, client, db):
         self._unloading = False
         self._claim_tunnel_watch()
@@ -3047,6 +3421,12 @@ class ComfyImageGenMod(loader.Module):
 
         current_workflow = self.get("default_workflow", _DEFAULT_WORKFLOW_NAME)
         canonical_workflow = self._canonical_workflow_name(current_workflow)
+        if canonical_workflow not in self._get_all_workflow_names():
+            canonical_workflow = (
+                _DEFAULT_CLOUD_WORKFLOW_NAME
+                if self._is_comfy_cloud()
+                else _DEFAULT_WORKFLOW_NAME
+            )
         if canonical_workflow != current_workflow:
             self.set("default_workflow", canonical_workflow)
 
@@ -3066,6 +3446,9 @@ class ComfyImageGenMod(loader.Module):
             self._assets_update_task = asyncio.create_task(self._assets_update_loop())
         if self._input_cleanup_task is None or self._input_cleanup_task.done():
             self._input_cleanup_task = asyncio.create_task(self._input_cleanup_loop())
+        if self.get("onboarding_pending", False) and not self.get("onboarding_shown", False):
+            if self._onboarding_task is None or self._onboarding_task.done():
+                self._onboarding_task = asyncio.create_task(self._show_onboarding_after_install())
         self._start_tunnel_watch_task()
 
     async def on_unload(self):
@@ -3099,10 +3482,22 @@ class ComfyImageGenMod(loader.Module):
                 task.cancel()
             await asyncio.gather(*cdown_tasks, return_exceptions=True)
             self._cdown_watch_tasks.clear()
+        if self._cdown_lora_metadata_tasks:
+            cdown_metadata_tasks = list(self._cdown_lora_metadata_tasks)
+            for task in cdown_metadata_tasks:
+                task.cancel()
+            await asyncio.gather(*cdown_metadata_tasks, return_exceptions=True)
+            self._cdown_lora_metadata_tasks.clear()
         if self._input_cleanup_task:
             self._input_cleanup_task.cancel()
             try:
                 await self._input_cleanup_task
+            except asyncio.CancelledError:
+                pass
+        if self._onboarding_task:
+            self._onboarding_task.cancel()
+            try:
+                await self._onboarding_task
             except asyncio.CancelledError:
                 pass
         if self._assets_update_task:
@@ -3147,21 +3542,47 @@ class ComfyImageGenMod(loader.Module):
             "gemini": {
                 "model": "gemini-2.5-flash",
             },
-            "groq": {},
+            "groq": {"model": "llama-3.3-70b-versatile"},
             "openrouter": {
                 "model": "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
             },
+            "openai": {"model": "gpt-4o-mini"},
             "grok": {
                 "model": "grok-4.20",
             },
-            "deepseek": {
-                "model": "deepseek-reasoner",
+            "qwen": {
+                "model": "qwen3.7-flash",
             },
+            "deepseek": {
+                "model": "deepseek-v4-pro",
+            },
+            "nvidiaapi": {
+                "model": "deepseek-ai/deepseek-v4-flash-0731",
+            },
+            _COMFY_TEXT_PROVIDER: {},
         }
 
     @staticmethod
     def _provider_ids():
-        return ("gemini", "groq", "openrouter", "grok", "deepseek")
+        return (
+            "gemini",
+            "groq",
+            "openrouter",
+            "openai",
+            "grok",
+            "qwen",
+            "deepseek",
+            "nvidiaapi",
+            _COMFY_TEXT_PROVIDER,
+        )
+
+    @staticmethod
+    def _external_provider_ids():
+        return ("gemini", "groq", "openrouter", "openai", "grok", "qwen", "deepseek", "nvidiaapi")
+
+    @staticmethod
+    def _provider_supports_prompt_template(provider):
+        return provider in ComfyImageGenMod._external_provider_ids()
 
     @staticmethod
     def _provider_config_key(provider):
@@ -3169,25 +3590,82 @@ class ComfyImageGenMod(loader.Module):
             "gemini": "gemini_api_key",
             "groq": "groq_api_key",
             "openrouter": "openrouter_api_key",
+            "openai": "openai_api_key",
             "grok": "grok_api_key",
+            "qwen": "qwen_api_key",
             "deepseek": "deepseek_api_key",
+            "nvidiaapi": "nvidiaapi_api_key",
         }
         return keys.get(provider)
 
     @staticmethod
     def _provider_model_presets(provider):
+        if provider == "openai":
+            return ("gpt-5.6-terra", "gpt-5.5", "gpt-4o-mini", "gpt-4.1")
+        if provider == "groq":
+            return ("llama-3.3-70b-versatile", "qwen/qwen3.8-27b")
+        if provider == "qwen":
+            return (
+                "qwen3.7-flash",
+                "qwen3.7-plus",
+                "qwen3.8-flash",
+                "qwen3.8-max",
+            )
         if provider == "deepseek":
             return (
-                "deepseek-reasoner",
-                "deepseek-chat",
                 "deepseek-v4-pro",
+                "deepseek-flash",
                 "deepseek-v4-flash",
+            )
+        if provider == "nvidiaapi":
+            return (
+                "deepseek-ai/deepseek-v4-flash-0731",
+                "deepseek-ai/deepseek-v4-pro-0813",
+                "meta/llama-3.2-90b-vision-instruct",
             )
         return ()
 
     @staticmethod
     def _provider_has_model_input(provider):
-        return provider in ("gemini", "openrouter", "grok", "deepseek")
+        return provider in ("gemini", "groq", "openrouter", "openai", "grok", "qwen", "deepseek", "nvidiaapi")
+
+    async def _provider_model_has_vision(self, provider, model=None):
+        model = str(model or self._get_provider_model(provider) or "").strip().lower()
+        if provider == _COMFY_TEXT_PROVIDER:
+            return False
+        if provider == "gemini":
+            return model.startswith("gemini-") and not any(x in model for x in ("tts", "embedding", "transcribe"))
+        if provider == "groq":
+            return model == "qwen/qwen3.8-27b"
+        if provider == "openai":
+            return model in {"gpt-5.6-terra", "gpt-5.5", "gpt-4o-mini", "gpt-4.1"}
+        if provider == "grok":
+            return model.startswith(("grok-4.20", "grok-4.7"))
+        if provider == "qwen":
+            return model.startswith(("qwen3.7-", "qwen3.8-", "qwen3.6-", "qwen-vl", "qwen3-vl", "qwen2.5-vl"))
+        if provider == "deepseek":
+            return model in {"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4.1-flash"}
+        if provider == "nvidiaapi":
+            return model == "meta/llama-3.2-90b-vision-instruct"
+        if provider == "openrouter" and "/" in model:
+            cache_key = f"provider_vision:openrouter:{model}"
+            if cache_key in self._comfy_cache:
+                return self._comfy_cache[cache_key]
+            try:
+                async with self._session_get(
+                    f"https://openrouter.ai/api/v1/models/{quote(model, safe='/:')}/endpoints",
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as response:
+                    if response.status != 200:
+                        return False
+                    data = await response.json(content_type=None)
+                architecture = (data.get("data") or {}).get("architecture") or {}
+                supports = "image" in architecture.get("input_modalities", [])
+                self._comfy_cache[cache_key] = supports
+                return supports
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError, AttributeError) as e:
+                logger.debug("OpenRouter modality lookup failed for %s: %s", model, e)
+        return False
 
     def _ensure_ai_settings(self):
         settings = self.get("ai_provider_settings")
@@ -3210,6 +3688,14 @@ class ComfyImageGenMod(loader.Module):
             saved_api_key = settings[provider_name].pop("api_key", "") or ""
             if saved_api_key and config_key and not self.config[config_key]:
                 self.config[config_key] = saved_api_key
+
+        if settings["deepseek"].get("model") in {"deepseek-chat", "deepseek-reasoner"}:
+            settings["deepseek"]["model"] = defaults["deepseek"]["model"]
+        if settings["nvidiaapi"].get("model") in {
+            "deepseek-ai/deepseek-v4-flash",
+            "deepseek-ai/deepseek-v4-pro",
+        }:
+            settings["nvidiaapi"]["model"] = defaults["nvidiaapi"]["model"]
 
         self.set("ai_provider_settings", settings)
         return settings
@@ -3662,7 +4148,12 @@ class ComfyImageGenMod(loader.Module):
             "max_queue": 4,
             "max_steps": 40,
             "max_steps_user_set": False,
+            "workflow": "",
+            "model": "",
+            "loras": {},
             "reject_russian_prompt": False,
+            "translate_prompt": False,
+            "cloud_skip_confirm": True,
             "blacklist": [],
         }
 
@@ -3680,6 +4171,11 @@ class ComfyImageGenMod(loader.Module):
         max_steps = self._coerce_int(raw_max_steps, 40, 1, 100)
         if not max_steps_user_set and max_steps == 100:
             max_steps = 40
+        workflow = str(settings.get("workflow") or "").strip()
+        if workflow:
+            workflow = self._canonical_workflow_name(workflow)
+            if workflow not in self._get_all_workflow_names():
+                workflow = ""
         return {
             "enabled": bool(settings.get("enabled", False)),
             "trigger": trigger,
@@ -3688,7 +4184,12 @@ class ComfyImageGenMod(loader.Module):
             "max_queue": self._coerce_int(settings.get("max_queue"), 4, 1, 50),
             "max_steps": max_steps,
             "max_steps_user_set": max_steps_user_set,
+            "workflow": workflow,
+            "model": str(settings.get("model") or "").strip(),
+            "loras": self._normalize_selected_loras(settings.get("loras")),
             "reject_russian_prompt": bool(settings.get("reject_russian_prompt", False)),
+            "translate_prompt": bool(settings.get("translate_prompt", False)),
+            "cloud_skip_confirm": bool(settings.get("cloud_skip_confirm", True)),
             "blacklist": [
                 int(user_id)
                 for user_id in blacklist
@@ -3713,9 +4214,17 @@ class ComfyImageGenMod(loader.Module):
         if not isinstance(generation_time, dict):
             generation_time = {}
 
+        auto_delete = settings.get("auto_delete")
+        if not isinstance(auto_delete, dict):
+            auto_delete = {}
+
         telegram_censorship = settings.get("telegram_censorship")
         if not isinstance(telegram_censorship, dict):
             telegram_censorship = {}
+
+        workflow_model = settings.get("workflow_model")
+        if not isinstance(workflow_model, dict):
+            workflow_model = {}
 
         tunnel_notify = settings.get("tunnel_notify")
         if not isinstance(tunnel_notify, dict):
@@ -3834,8 +4343,15 @@ class ComfyImageGenMod(loader.Module):
                 "progress": bool(generation_time.get("progress", True)),
                 "result": bool(generation_time.get("result", True)),
             },
+            "auto_delete": {
+                "enabled": bool(auto_delete.get("enabled", False)),
+                "delay": self._coerce_int(auto_delete.get("delay"), 150, 5, 86400),
+            },
             "telegram_censorship": {
                 "enabled": bool(telegram_censorship.get("enabled", False)),
+            },
+            "workflow_model": {
+                "autoswitch": bool(workflow_model.get("autoswitch", True)),
             },
             "tunnel_notify": {
                 "enabled": bool(tunnel_notify.get("enabled", True)),
@@ -3863,6 +4379,15 @@ class ComfyImageGenMod(loader.Module):
     def _get_ult_settings(self):
         return self._ensure_ult_settings()
 
+    def _get_autodelete_config(self):
+        return self._get_ult_settings()["auto_delete"]
+
+    def _autodelete_enabled(self):
+        return bool(self._get_autodelete_config()["enabled"])
+
+    def _autodelete_delay(self):
+        return self._get_autodelete_config()["delay"]
+
     def _set_ult_settings(self, settings: dict):
         self.set("ultimate_settings", settings)
 
@@ -3886,6 +4411,13 @@ class ComfyImageGenMod(loader.Module):
             self._get_ult_settings()
             .get("telegram_censorship", {})
             .get("enabled", False)
+        )
+
+    def _workflow_model_autoswitch_enabled(self) -> bool:
+        return bool(
+            self._get_ult_settings()
+            .get("workflow_model", {})
+            .get("autoswitch", True)
         )
 
     def _tunnel_notify_enabled(self) -> bool:
@@ -3980,6 +4512,25 @@ class ComfyImageGenMod(loader.Module):
         settings["trigger_generation"]["chats"][chat_key] = self._normalize_trigger_settings(chat_settings)
         self._set_ult_settings(settings)
 
+    def _trigger_workflow_name(self, settings):
+        configured = str((settings or {}).get("workflow") or "").strip()
+        if configured:
+            return self._canonical_workflow_name(configured)
+        return self._canonical_workflow_name(
+            self.get("default_workflow", _DEFAULT_WORKFLOW_NAME)
+        )
+
+    def _trigger_workflow_choices(self):
+        custom = self.get("workflows", {})
+        custom_names = set(custom) if isinstance(custom, dict) else set()
+        cloud_mode = self._is_comfy_cloud()
+        return [
+            name
+            for name in self._get_all_workflow_names()
+            if name in custom_names
+            or self._is_cloud_workflow_name(name) == cloud_mode
+        ]
+
     def _get_target_chat_id(self, target):
         if isinstance(target, Message):
             return utils.get_chat_id(target)
@@ -3997,14 +4548,6 @@ class ComfyImageGenMod(loader.Module):
         return None
 
     def _restore_inline_input_source(self, target, inline_message_id=None):
-        """Point an input callback back to the form that opened it.
-
-        Heroku 2.1 creates a temporary inline message for a submitted ``input``
-        value.  Its callback object retains the original form in ``form``, but
-        exposes the temporary message as ``inline_message_id``.  Editing that
-        temporary message leaves the original form and its input registry out
-        of sync.
-        """
         if isinstance(target, dict) or isinstance(target, Message):
             return target
 
@@ -4023,7 +4566,6 @@ class ComfyImageGenMod(loader.Module):
         return target
 
     def _wrap_inline_input_handlers(self, reply_markup):
-        """Restore the source form before every Heroku inline-input handler."""
         if isinstance(reply_markup, dict):
             rows = [[reply_markup]]
         elif isinstance(reply_markup, list):
@@ -4142,8 +4684,7 @@ class ComfyImageGenMod(loader.Module):
             **kwargs,
         )
 
-    async def _render_inline(self, target, text, reply_markup=None, apply_theme=True, **kwargs):
-        target = self._restore_inline_input_source(target)
+    async def _render_inline(self, target, text, reply_markup=None, apply_theme=True, notify_failure=True, **kwargs):
         if apply_theme:
             text = self._apply_emoji_theme(text)
             reply_markup = self._apply_emoji_theme_markup(reply_markup)
@@ -4164,6 +4705,8 @@ class ComfyImageGenMod(loader.Module):
                 last_error = e
                 if not self._is_inline_too_long_error(e):
                     logger.debug("Inline render failed: %s", e)
+                    if notify_failure and isinstance(target, InlineCall):
+                        await self._safe_call_answer(target, self.strings("inline_update_failed"), show_alert=True)
                     return False
                 logger.debug("Inline render text is too long, retrying with shorter text: %s", e)
                 too_long = True
@@ -4174,7 +4717,28 @@ class ComfyImageGenMod(loader.Module):
 
         if last_error:
             logger.debug("Inline render failed after text shortening: %s", last_error)
+        if notify_failure and isinstance(target, InlineCall):
+            await self._safe_call_answer(target, self.strings("inline_update_failed"), show_alert=True)
         return False
+
+    @staticmethod
+    def _repair_inline_edit_target(target):
+        form = getattr(target, "form", None)
+        if not isinstance(form, dict):
+            return target
+        unit_id = form.get("id")
+        inline_message_id = form.get("inline_message_id")
+        if unit_id:
+            try:
+                target.unit_id = unit_id
+            except Exception:
+                pass
+        if inline_message_id:
+            try:
+                target.inline_message_id = inline_message_id
+            except Exception:
+                pass
+        return target
 
     async def _render_inline_once(self, target, text, reply_markup=None, **kwargs):
         try:
@@ -4185,25 +4749,20 @@ class ComfyImageGenMod(loader.Module):
                     reply_markup=reply_markup,
                     **kwargs,
                 )
+            target = self._repair_inline_edit_target(target)
             if hasattr(target, "edit") and callable(target.edit):
                 try:
-                    edited = await target.edit(text=text, reply_markup=reply_markup, **kwargs)
-                    if edited:
-                        return edited
-                except Exception as e:
-                    if self._is_inline_too_long_error(e):
-                        raise
-                    logger.debug("Inline direct edit failed: %s", e)
-            form = target if isinstance(target, dict) else getattr(target, "form", {}) or {}
-            if isinstance(form, dict):
-                caller = form.get("caller") or form.get("message")
-                if isinstance(caller, Message):
-                    return await self._create_inline_form(
-                        message=caller,
+                    edited = await target.edit(
                         text=text,
                         reply_markup=reply_markup,
                         **kwargs,
                     )
+                    if edited is not False:
+                        return target
+                except Exception as e:
+                    if self._is_inline_too_long_error(e):
+                        raise
+                    logger.debug("Inline direct edit failed: %s", e)
         except Exception as e:
             if self._is_inline_too_long_error(e):
                 raise
@@ -4242,6 +4801,7 @@ class ComfyImageGenMod(loader.Module):
                     target,
                     text,
                     reply_markup,
+                    notify_failure=False,
                     **banner_kwargs,
                     **kwargs,
                 )
@@ -4253,7 +4813,6 @@ class ComfyImageGenMod(loader.Module):
         return await self._render_inline(target, text, reply_markup, **kwargs)
 
     async def _edit_inline_status(self, target, text, reply_markup=None, apply_theme=True):
-        target = self._restore_inline_input_source(target)
         if apply_theme:
             text = self._apply_emoji_theme(text)
             reply_markup = self._apply_emoji_theme_markup(reply_markup)
@@ -4261,36 +4820,20 @@ class ComfyImageGenMod(loader.Module):
         form = getattr(target, "form", {}) or {}
         if isinstance(target, dict):
             form = target
+        target = self._repair_inline_edit_target(target)
         if hasattr(target, "edit") and callable(target.edit):
             try:
-                if await target.edit(text=text, reply_markup=reply_markup):
+                edited = await target.edit(text=text, reply_markup=reply_markup)
+                if edited is not False:
                     return True
             except Exception as e:
                 logger.debug("Inline status edit failed: %s", e)
 
-        unit_id = (
-            form.get("id") or form.get("unit_id")
-            if isinstance(form, dict)
-            else getattr(target, "unit_id", None)
-        )
         inline_message_id = (
             form.get("inline_message_id")
             if isinstance(form, dict)
             else getattr(target, "inline_message_id", None)
         )
-        edit_unit = getattr(self.inline, "_edit_unit", None)
-        if unit_id and callable(edit_unit):
-            try:
-                if await edit_unit(
-                    text=text,
-                    reply_markup=reply_markup,
-                    unit_id=unit_id,
-                    inline_message_id=inline_message_id,
-                ):
-                    return True
-            except Exception as e:
-                logger.debug("Inline form state edit failed: %s", e)
-
         bot = getattr(self.inline, "bot", None)
         if bot is not None:
             try:
@@ -4604,8 +5147,6 @@ class ComfyImageGenMod(loader.Module):
 
         candidates = [chat_id]
         if int(chat_id) > 0:
-            # A bare numeric ID from t.me/c is the channel's base ID.  The
-            # actual Telegram peer ID is -100<base ID>.
             candidates.insert(0, int(f"-100{chat_id}"))
 
         entity = None
@@ -4624,10 +5165,6 @@ class ComfyImageGenMod(loader.Module):
         if entity is None or resolved_chat_id is None:
             raise RuntimeError("chat is unavailable to this account")
 
-        # In Heroku 2.1, get_permissions() can report stale/default banned
-        # rights for channels where the account can actually write.  Resolving
-        # the peer is sufficient here; Telegram remains the source of truth
-        # when the notification is sent from the user account.
         return resolved_chat_id, topic_id, True
 
     async def _ult_render_main(self, target, notice=None):
@@ -4649,31 +5186,15 @@ class ComfyImageGenMod(loader.Module):
             if trigger_settings["enabled"]
             else self.strings("ult_status_off")
         )
-        censorship_enabled = bool(settings["telegram_censorship"]["enabled"])
-        censorship_status = (
-            self.strings("ult_status_on")
-            if censorship_enabled
-            else self.strings("ult_status_off")
-        )
-        tunnel_notify_enabled = bool(settings["tunnel_notify"]["enabled"])
-        tunnel_notify_status = (
-            self.strings("ult_status_on")
-            if tunnel_notify_enabled
-            else self.strings("ult_status_off")
-        )
-        theme = settings["ui"]["theme"]
-
+        delete_config = settings["auto_delete"]
+        delete_status = self.strings("ult_status_on") if delete_config["enabled"] else self.strings("ult_status_off")
         text_lines = [
             self.strings("ult_title"),
             "",
             f"{self.strings('ult_ai_title')}: {ai_status}",
             f"{self.strings('ult_gens_title')}: {gens_status}",
             f"{self.strings('ult_trigger_title')}: {trigger_status}",
-            self.strings("ult_theme_status").format(
-                utils.escape_html(self._emoji_theme_display_name(theme))
-            ),
-            self.strings("tunnel_notify_status").format(tunnel_notify_status),
-            self.strings("ult_censorship_status").format(censorship_status),
+            self.strings("ult_autodelete_status").format(delete_status),
         ]
         if notice:
             text_lines.extend(("", notice))
@@ -4695,44 +5216,20 @@ class ComfyImageGenMod(loader.Module):
             "args": (chat_id,),
             "style": "primary",
         }
-        time_button = {
-            "text": self.strings("ult_btn_time"),
-            "callback": self._ult_open_generation_time,
+        extra_button = {
+            "text": self.strings("ult_btn_extra"),
+            "callback": self._ult_open_additional_settings,
             "style": "primary",
         }
-        theme_button = {
-            "text": self.strings("ult_btn_theme"),
-            "callback": self._ult_open_emoji_theme,
+        delete_button = {
+            "text": self.strings("ult_btn_autodelete"),
+            "callback": self._ult_render_autodelete,
             "style": "primary",
         }
-        tunnel_notify_button = {
-            "text": self.strings("ult_btn_tunnel_notify"),
-            "callback": self._ult_open_tunnel_notify,
-            "style": "primary",
-        }
-        censorship_button = {
-            "text": (
-                self.strings("ult_btn_censorship_on")
-                if censorship_enabled
-                else self.strings("ult_btn_censorship_off")
-            ),
-            "callback": self._ult_toggle_telegram_censorship,
-            "style": self._state_toggle_style(censorship_enabled),
-            "emoji_id": self._state_toggle_emoji(censorship_enabled),
-        }
-
         markup = [
             [ai_button, gens_button],
             [trigger_button],
-            [time_button, theme_button],
-            [tunnel_notify_button],
-            [censorship_button],
-            [{
-                "text": self.strings("ult_btn_update_assets"),
-                "callback": self._ult_update_assets,
-                "style": "primary",
-                "emoji_id": "5361979468887893611",
-            }],
+            [extra_button, delete_button],
             [{
                 "text": self.strings("btn_close"),
                 "callback": self._safe_close_form,
@@ -4741,6 +5238,120 @@ class ComfyImageGenMod(loader.Module):
         ]
 
         await self._render_inline(target, text, markup)
+
+    async def _ult_render_autodelete(self, target):
+        config = self._get_autodelete_config()
+        text = "\n".join((
+            self.strings("ult_autodelete_title"),
+            self.strings("ult_autodelete_status").format(
+                self.strings("ult_status_on") if config["enabled"] else self.strings("ult_status_off")
+            ),
+            self.strings("ult_autodelete_delay").format(self._format_duration(config["delay"])),
+        ))
+        markup = [
+            [{"text": self._state_toggle_text(config["enabled"]), "callback": self._ult_toggle_autodelete,
+              "style": self._state_toggle_style(config["enabled"])}],
+            [{"text": self.strings("ult_btn_autodelete_delay"), "input": self.strings("ult_autodelete_input"),
+              "handler": self._ult_autodelete_delay_input}],
+            [{"text": self.strings("btn_back"), "callback": self._ult_back_main}],
+        ]
+        await self._render_inline(target, text, markup)
+
+    async def _ult_toggle_autodelete(self, call: InlineCall):
+        settings = self._get_ult_settings()
+        settings["auto_delete"]["enabled"] = not settings["auto_delete"]["enabled"]
+        self._set_ult_settings(settings)
+        await self._ult_render_autodelete(call)
+
+    async def _ult_autodelete_delay_input(self, call: InlineCall, query: str):
+        try:
+            delay = int(str(query).strip())
+        except ValueError:
+            return await self._safe_call_answer(call, self.strings("ult_autodelete_input"), show_alert=True)
+        settings = self._get_ult_settings()
+        settings["auto_delete"]["delay"] = max(5, min(86400, delay))
+        self._set_ult_settings(settings)
+        await self._ult_render_autodelete(self._source_inline_target(call))
+
+    async def _ult_render_additional_settings(self, target, notice=None):
+        settings = self._get_ult_settings()
+        autoswitch_enabled = self._workflow_model_autoswitch_enabled()
+        censorship_enabled = bool(settings["telegram_censorship"]["enabled"])
+        tunnel_notify_enabled = bool(settings["tunnel_notify"]["enabled"])
+        autoswitch_status = (
+            self.strings("ult_status_on")
+            if autoswitch_enabled
+            else self.strings("ult_status_off")
+        )
+        censorship_status = (
+            self.strings("ult_status_on")
+            if censorship_enabled
+            else self.strings("ult_status_off")
+        )
+        tunnel_notify_status = (
+            self.strings("ult_status_on")
+            if tunnel_notify_enabled
+            else self.strings("ult_status_off")
+        )
+        text_lines = [
+            self.strings("ult_extra_title"),
+            "",
+            self.strings("ult_auto_model_status").format(autoswitch_status),
+            self.strings("ult_theme_status").format(
+                utils.escape_html(self._emoji_theme_display_name(settings["ui"]["theme"]))
+            ),
+            self.strings("ult_censorship_status").format(censorship_status),
+            self.strings("tunnel_notify_status").format(tunnel_notify_status),
+        ]
+        if notice:
+            text_lines.extend(("", notice))
+        markup = [
+            [{
+                "text": f"{self._state_toggle_text(autoswitch_enabled)} {self.strings('ult_btn_auto_model')}",
+                "callback": self._ult_toggle_workflow_model_autoswitch,
+                "style": self._state_toggle_style(autoswitch_enabled),
+                "emoji_id": self._state_toggle_emoji(autoswitch_enabled),
+            }],
+            [
+                {
+                    "text": self.strings("ult_btn_time"),
+                    "callback": self._ult_open_generation_time,
+                    "style": "primary",
+                },
+                {
+                    "text": self.strings("ult_btn_theme"),
+                    "callback": self._ult_open_emoji_theme,
+                    "style": "primary",
+                },
+            ],
+            [{
+                "text": (
+                    self.strings("ult_btn_censorship_on")
+                    if censorship_enabled
+                    else self.strings("ult_btn_censorship_off")
+                ),
+                "callback": self._ult_toggle_telegram_censorship,
+                "style": self._state_toggle_style(censorship_enabled),
+                "emoji_id": self._state_toggle_emoji(censorship_enabled),
+            }],
+            [{
+                "text": self.strings("ult_btn_update_assets"),
+                "callback": self._ult_update_assets,
+                "style": "primary",
+                "emoji_id": "5361979468887893611",
+            }],
+            [{
+                "text": self.strings("ult_btn_tunnel_notify"),
+                "callback": self._ult_open_tunnel_notify,
+                "style": "primary",
+            }],
+            [{
+                "text": self.strings("btn_back"),
+                "callback": self._ult_back_main,
+                "style": "primary",
+            }],
+        ]
+        await self._render_inline(target, "\n".join(text_lines), markup)
 
     async def _ult_update_assets(self, call: InlineCall):
         await self._safe_call_answer(call, self.strings("ult_assets_update_started"))
@@ -4752,7 +5363,7 @@ class ComfyImageGenMod(loader.Module):
         except Exception as e:
             logger.warning("Manual assets update failed: %s", e)
             updated = False
-        await self._ult_render_main(
+        await self._ult_render_additional_settings(
             call,
             notice=self.strings(
                 "ult_assets_updated" if updated else "ult_assets_update_partial"
@@ -4772,6 +5383,9 @@ class ComfyImageGenMod(loader.Module):
         if chat_id is None:
             chat_id = self._get_target_chat_id(call)
         await self._ult_render_trigger_generation(call, chat_id)
+
+    async def _ult_open_additional_settings(self, call: InlineCall):
+        await self._ult_render_additional_settings(call)
 
     async def _ult_open_generation_time(self, call: InlineCall):
         await self._ult_render_generation_time(call)
@@ -4866,7 +5480,7 @@ class ComfyImageGenMod(loader.Module):
                     ],
                 ]
             )
-        markup.append([{"text": self.strings("btn_back"), "callback": self._ult_back_main, "style": "primary"}])
+        markup.append([{"text": self.strings("btn_back"), "callback": self._ult_back_additional_settings, "style": "primary"}])
         if force_edit:
             await self._edit_inline_status(target, text, markup)
             return
@@ -5102,7 +5716,23 @@ class ComfyImageGenMod(loader.Module):
             await call.answer(self.strings("ult_toggle_saved"))
         except Exception:
             pass
-        await self._ult_render_main(call)
+        await self._ult_render_additional_settings(call)
+
+    async def _ult_toggle_workflow_model_autoswitch(self, call: InlineCall):
+        settings = self._get_ult_settings()
+        settings["workflow_model"]["autoswitch"] = not settings["workflow_model"].get(
+            "autoswitch", True
+        )
+        self._set_ult_settings(settings)
+        if self._is_comfy_cloud():
+            await self._autoswitch_model_to_workflow(
+                self.get("default_workflow", _DEFAULT_WORKFLOW_NAME)
+            )
+        try:
+            await call.answer(self.strings("ult_toggle_saved"))
+        except Exception:
+            pass
+        await self._ult_render_additional_settings(call)
 
     def _format_tunnel_target(self, target):
         if target.get("bot_pm"):
@@ -5175,7 +5805,7 @@ class ComfyImageGenMod(loader.Module):
             )
         markup.append([{
             "text": self.strings("btn_back"),
-            "callback": self._ult_back_main,
+            "callback": self._ult_back_additional_settings,
             "style": "primary",
         }])
         await self._render_inline(target, "\n".join(lines), markup)
@@ -5350,7 +5980,7 @@ class ComfyImageGenMod(loader.Module):
             [
                 {
                     "text": self.strings("btn_back"),
-                    "callback": self._ult_back_main,
+                    "callback": self._ult_back_additional_settings,
                     "style": "primary",
                 }
             ],
@@ -5364,12 +5994,23 @@ class ComfyImageGenMod(loader.Module):
         confirm_enabled = bool(settings["prompt_confirm"]["enabled"])
         provider = self._get_prompt_provider()
         provider_name = self._format_provider_name(provider)
+        if await self._provider_model_has_vision(provider):
+            provider_name += " (vision)"
+        is_comfy_text = provider == _COMFY_TEXT_PROVIDER
         api_key_status = (
-            self.strings("provider_api_key_set")
-            if self._get_provider_api_key(provider)
-            else self.strings("provider_api_key_missing")
+            self.strings("provider_api_key_not_required")
+            if is_comfy_text
+            else (
+                self.strings("provider_api_key_set")
+                if self._get_provider_api_key(provider)
+                else self.strings("provider_api_key_missing")
+            )
         )
-        model = self._get_provider_model(provider) if self._provider_has_model_input(provider) else self.strings("not_set")
+        model = (
+            _COMFY_TEXT_CLIP_NAME
+            if is_comfy_text
+            else self._get_provider_model(provider) if self._provider_has_model_input(provider) else self.strings("not_set")
+        )
 
         text = "\n".join(
             [
@@ -5407,7 +6048,6 @@ class ComfyImageGenMod(loader.Module):
                 }
             ],
             [{"text": self.strings("provider_btn_menu"), "callback": self._argset_provider_menu}],
-            [{"text": self.strings("enhance_prompt_btn_menu"), "callback": self._ult_open_enhance_prompts, "style": "primary"}],
             [{"text": self.strings("btn_back"), "callback": self._ult_back_main, "style": "primary"}],
         ]
         await self._render_inline(target, text, markup)
@@ -5585,9 +6225,16 @@ class ComfyImageGenMod(loader.Module):
             else self.strings("ult_status_off")
         )
         russian_guard = settings.get("reject_russian_prompt", False)
+        auto_translate = settings.get("translate_prompt", False)
+        cloud_skip_confirm = bool(settings.get("cloud_skip_confirm", True))
         russian_guard_status = (
             self.strings("ult_status_on")
             if russian_guard
+            else self.strings("ult_status_off")
+        )
+        auto_translate_status = (
+            self.strings("ult_status_on")
+            if auto_translate
             else self.strings("ult_status_off")
         )
         toggle_text = self._state_toggle_text(enabled)
@@ -5595,7 +6242,52 @@ class ComfyImageGenMod(loader.Module):
         auto_delete_toggle = self._state_toggle_text(auto_delete)
         auto_delete_style = self._state_toggle_style(auto_delete)
         active = self._trigger_queue_counts.get(str(chat_id), 0)
+        trigger_workflow = self._trigger_workflow_name(settings)
+        configured_workflow = str(settings.get("workflow") or "").strip()
 
+        detail_lines = [
+                self.strings("ult_trigger_chat").format(
+                    utils.escape_html(str(chat_id))
+                ),
+                self.strings("ult_trigger_word").format(
+                    utils.escape_html(settings["trigger"])
+                ),
+                self.strings("ult_trigger_autodelete").format(auto_delete_status),
+                self.strings("ult_trigger_delay").format(
+                    self._format_duration(settings["auto_delete_delay"])
+                ),
+                self.strings("ult_trigger_queue").format(settings["max_queue"]),
+                self.strings("ult_trigger_steps_limit").format(settings["max_steps"]),
+                (
+                    self.strings("ult_trigger_workflow").format(
+                        utils.escape_html(trigger_workflow)
+                    )
+                    if configured_workflow
+                    else self.strings("ult_trigger_workflow_default").format(
+                        utils.escape_html(trigger_workflow)
+                    )
+                ),
+                self.strings("ult_trigger_active").format(active),
+                self.strings("ult_trigger_russian_guard").format(
+                    russian_guard_status
+                ),
+                self.strings("ult_trigger_auto_translate").format(
+                    auto_translate_status
+                ),
+            self.strings("ult_trigger_blacklist").format(
+                len(settings.get("blacklist", []))
+            ),
+        ]
+        if self._is_comfy_cloud():
+            detail_lines.insert(
+                -1,
+                self.strings("ult_trigger_cloud_skip_confirm").format(
+                    self.strings("ult_status_on")
+                    if cloud_skip_confirm
+                    else self.strings("ult_status_off")
+                ),
+            )
+        details = "\n".join(detail_lines)
         text = "\n".join(
             [
                 self.strings("ult_trigger_title"),
@@ -5603,15 +6295,7 @@ class ComfyImageGenMod(loader.Module):
                 "",
                 self.strings("ult_trigger_desc"),
                 "",
-                self.strings("ult_trigger_chat").format(utils.escape_html(str(chat_id))),
-                self.strings("ult_trigger_word").format(utils.escape_html(settings["trigger"])),
-                self.strings("ult_trigger_autodelete").format(auto_delete_status),
-                self.strings("ult_trigger_delay").format(self._format_duration(settings["auto_delete_delay"])),
-                self.strings("ult_trigger_queue").format(settings["max_queue"]),
-                self.strings("ult_trigger_steps_limit").format(settings["max_steps"]),
-                self.strings("ult_trigger_active").format(active),
-                self.strings("ult_trigger_russian_guard").format(russian_guard_status),
-                self.strings("ult_trigger_blacklist").format(len(settings.get("blacklist", []))),
+                f"<blockquote expandable>{details}</blockquote>",
             ]
         )
 
@@ -5642,7 +6326,7 @@ class ComfyImageGenMod(loader.Module):
                     "emoji_id": self._state_toggle_emoji(auto_delete),
                 },
                 {
-                    "text": self.strings("ult_btn_trigger_delay"),
+                    "text": self.strings("ult_btn_trigger_delay_short"),
                     "input": self.strings("ult_trigger_delay_input"),
                     "handler": self._ult_trigger_delay_input,
                     "args": (chat_id,),
@@ -5654,15 +6338,27 @@ class ComfyImageGenMod(loader.Module):
                     "input": self.strings("ult_trigger_queue_input"),
                     "handler": self._ult_trigger_queue_input,
                     "args": (chat_id,),
-                }
-            ],
-            [
+                },
                 {
                     "text": self.strings("ult_btn_trigger_steps"),
                     "input": self.strings("ult_trigger_steps_input"),
                     "handler": self._ult_trigger_steps_input,
                     "args": (chat_id,),
                 }
+            ],
+            [
+                {
+                    "text": self.strings("ult_trigger_generation_menu"),
+                    "callback": self._ult_render_trigger_generation_options,
+                    "args": (chat_id,),
+                    "style": "primary",
+                },
+                {
+                    "text": self.strings("ult_btn_trigger_blacklist"),
+                    "callback": self._ult_render_trigger_blacklist,
+                    "args": (chat_id,),
+                    "style": "danger",
+                },
             ],
             [
                 {
@@ -5675,10 +6371,11 @@ class ComfyImageGenMod(loader.Module):
             ],
             [
                 {
-                    "text": self.strings("ult_btn_trigger_blacklist"),
-                    "callback": self._ult_render_trigger_blacklist,
+                    "text": f"{self._state_toggle_text(auto_translate)} {self.strings('ult_trigger_translate')}",
+                    "callback": self._ult_toggle_trigger_translate,
                     "args": (chat_id,),
-                    "style": "danger",
+                    "style": self._state_toggle_style(auto_translate),
+                    "emoji_id": self._state_toggle_emoji(auto_translate),
                 }
             ],
             [
@@ -5690,7 +6387,210 @@ class ComfyImageGenMod(loader.Module):
             ],
         ]
 
+        if self._is_comfy_cloud():
+            markup.insert(
+                1,
+                [
+                    {
+                        "text": f"{self._state_toggle_text(cloud_skip_confirm)} {self.strings('ult_btn_trigger_cloud_skip_confirm')}",
+                        "callback": self._ult_toggle_trigger_cloud_skip_confirm,
+                        "args": (chat_id,),
+                        "style": self._state_toggle_style(cloud_skip_confirm),
+                        "emoji_id": self._state_toggle_emoji(cloud_skip_confirm),
+                    }
+                ],
+            )
+
         await self._render_inline(target, text, markup)
+
+    async def _ult_render_trigger_generation_options(self, target, chat_id):
+        chat_id = chat_id if chat_id is not None else self._get_target_chat_id(target)
+        settings = self._get_trigger_settings_for_chat(chat_id)
+        workflow = self._trigger_workflow_name(settings)
+        model = settings.get("model") or self.strings("ult_trigger_model_default_choice")
+        loras = self._normalize_selected_loras(settings.get("loras"))
+        text = "\n".join((
+            self.strings("ult_trigger_generation_title"),
+            self.strings("ult_trigger_workflow").format(utils.escape_html(workflow)),
+            self.strings("ult_trigger_model_title") + ": " + utils.escape_html(model),
+            self.strings("ult_trigger_loras_title") + ": " + str(len(loras)),
+        ))
+        markup = [
+            [{"text": self.strings("ult_btn_trigger_workflow"), "callback": self._ult_render_trigger_workflow_picker,
+              "args": (chat_id, 0)}],
+            [{"text": self.strings("ult_trigger_model_title"), "callback": self._ult_render_trigger_model_picker,
+              "args": (chat_id, 0, "")}],
+            [{"text": self.strings("ult_trigger_loras_title"), "callback": self._ult_render_trigger_lora_picker,
+              "args": (chat_id, 0)}],
+            [{"text": self.strings("btn_back"), "callback": self._ult_open_trigger_generation,
+              "args": (chat_id,)}],
+        ]
+        await self._render_inline(target, text, markup)
+
+    async def _ult_render_trigger_model_picker(self, target, chat_id, page=0, search_query=""):
+        settings = self._get_trigger_settings_for_chat(chat_id)
+        try:
+            models = sorted(await self._get_available_checkpoints(), key=str.casefold)
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as e:
+            logger.warning("Trigger model list failed: %s", e)
+            return await self._safe_call_answer(target, self.strings("models_load_failed"), show_alert=True)
+        query = " ".join(str(search_query or "").split())
+        visible = self._filter_names_by_query(models, query)
+        page_size = 6
+        pages = max(1, (len(visible) + page_size - 1) // page_size)
+        page = max(0, min(int(page), pages - 1))
+        chosen = settings.get("model") or ""
+        lines = [self.strings("ult_trigger_model_title"), self.strings("models_page").format(page + 1, pages)]
+        if query:
+            lines.append(self.strings("models_search_label").format(utils.escape_html(query)))
+        if not visible:
+            lines.append(self.strings("models_search_empty"))
+        markup = [[{"text": self.strings("ult_trigger_model_default_choice"), "callback": self._ult_set_trigger_model,
+                   "args": (chat_id, ""), "style": "success" if not chosen else "primary"}]]
+        for name in visible[page * page_size:(page + 1) * page_size]:
+            markup.append([{"text": ("\u2705 " if name == chosen else "\u2b1c ") + self._format_model_name(name, max_length=38),
+                            "callback": self._ult_set_trigger_model, "args": (chat_id, name)}])
+        nav = []
+        if page:
+            nav.append({"text": "\u25c0\ufe0f", "callback": self._ult_render_trigger_model_picker, "args": (chat_id, page - 1, query)})
+        if page + 1 < pages:
+            nav.append({"text": "\u25b6\ufe0f", "callback": self._ult_render_trigger_model_picker, "args": (chat_id, page + 1, query)})
+        if nav:
+            markup.append(nav)
+        markup.append([{"text": self.strings("models_search_btn"), "input": self.strings("models_search_input"),
+                        "handler": self._ult_trigger_model_search_input, "args": (chat_id,)}])
+        markup.append([{"text": self.strings("ult_trigger_model_manual"), "input": self.strings("ult_trigger_model_input"),
+                        "handler": self._ult_trigger_model_manual_input, "args": (chat_id,)}])
+        markup.append([{"text": self.strings("btn_back"), "callback": self._ult_render_trigger_generation_options, "args": (chat_id,)}])
+        await self._render_inline(target, "\n".join(lines), markup)
+
+    async def _ult_trigger_model_search_input(self, call: InlineCall, query: str, chat_id):
+        await self._ult_render_trigger_model_picker(self._source_inline_target(call), chat_id, 0, query)
+
+    async def _ult_trigger_model_manual_input(self, call: InlineCall, query: str, chat_id):
+        await self._ult_set_trigger_model(call, chat_id, str(query or "").strip())
+
+    async def _ult_set_trigger_model(self, call: InlineCall, chat_id, model_name):
+        settings = self._get_trigger_settings_for_chat(chat_id)
+        settings["model"] = str(model_name or "").strip()
+        self._set_trigger_settings_for_chat(chat_id, settings)
+        await self._ult_render_trigger_generation_options(self._source_inline_target(call), chat_id)
+
+    async def _ult_render_trigger_lora_picker(self, target, chat_id, page=0):
+        settings = self._get_trigger_settings_for_chat(chat_id)
+        state_id = str(uuid.uuid4())
+        self._argset_lora_states[state_id] = {
+            "trigger_chat_id": chat_id,
+            "page": page,
+            "filter_mode": "all",
+            "search_query": "",
+            "selected": self._normalize_lora_preset_entries(settings.get("loras")),
+        }
+        await self._render_argset_lora_list(target, state_id)
+
+    async def _ult_render_trigger_workflow_picker(self, target, chat_id, page=0):
+        chat_id = chat_id if chat_id is not None else self._get_target_chat_id(target)
+        settings = self._get_trigger_settings_for_chat(chat_id)
+        workflows = self._trigger_workflow_choices()
+        per_page = 8
+        total_pages = max(1, (len(workflows) + per_page - 1) // per_page)
+        page = max(0, min(int(page), total_pages - 1))
+        page_workflows = workflows[page * per_page:(page + 1) * per_page]
+        configured = str(settings.get("workflow") or "").strip()
+        effective = self._trigger_workflow_name(settings)
+        default_workflow = self._canonical_workflow_name(
+            self.get("default_workflow", _DEFAULT_WORKFLOW_NAME)
+        )
+        default_display = (
+            default_workflow
+            if len(default_workflow) <= 52
+            else default_workflow[:49] + "..."
+        )
+        lines = [
+            self.strings("ult_trigger_workflow_title"),
+            "",
+            self.strings("ult_trigger_workflow").format(
+                utils.escape_html(effective)
+            ),
+            self.strings("wf_page").format(page + 1, total_pages),
+        ]
+        buttons = [{
+            "text": (
+                "✅ " if not configured else "⬜ "
+            ) + self.strings("ult_trigger_workflow_default").format(
+                default_display
+            ),
+            "callback": self._ult_set_trigger_workflow,
+            "args": (chat_id, ""),
+            "style": "success" if not configured else "primary",
+        }]
+        for workflow_name in page_workflows:
+            is_selected = configured == workflow_name
+            display_name = (
+                workflow_name
+                if len(workflow_name) <= 56
+                else workflow_name[:53] + "..."
+            )
+            buttons.append({
+                "text": ("✅ " if is_selected else "⬜ ") + display_name,
+                "callback": self._ult_set_trigger_workflow,
+                "args": (chat_id, workflow_name),
+                "style": "success" if is_selected else "primary",
+            })
+        markup = []
+        row = []
+        for button in buttons:
+            if row and len(row[0]["text"]) + len(button["text"]) <= 42:
+                row.append(button)
+                markup.append(row)
+                row = []
+            else:
+                if row:
+                    markup.append(row)
+                row = [button]
+        if row:
+            markup.append(row)
+        nav_row = []
+        if page > 0:
+            nav_row.append({
+                "text": "◀️",
+                "callback": self._ult_render_trigger_workflow_picker,
+                "args": (chat_id, page - 1),
+            })
+        if page < total_pages - 1:
+            nav_row.append({
+                "text": "▶️",
+                "callback": self._ult_render_trigger_workflow_picker,
+                "args": (chat_id, page + 1),
+            })
+        if nav_row:
+            markup.append(nav_row)
+        markup.append([{
+            "text": self.strings("btn_back"),
+            "callback": self._ult_render_trigger_generation_options,
+            "args": (chat_id,),
+            "style": "primary",
+        }])
+        await self._render_inline(target, "\n".join(lines), markup)
+
+    async def _ult_set_trigger_workflow(self, call: InlineCall, chat_id, workflow_name):
+        settings = self._get_trigger_settings_for_chat(chat_id)
+        workflow_name = str(workflow_name or "").strip()
+        if workflow_name:
+            workflow_name = self._canonical_workflow_name(workflow_name)
+            if workflow_name not in self._trigger_workflow_choices():
+                return await self._ult_render_trigger_workflow_picker(call, chat_id)
+        settings["workflow"] = workflow_name
+        self._set_trigger_settings_for_chat(chat_id, settings)
+        try:
+            await call.answer(
+                self.strings("ult_trigger_workflow_set").format(workflow_name)
+                if workflow_name
+                else self.strings("ult_trigger_workflow_default_set")
+            )
+        except Exception:
+            pass
+        await self._ult_render_trigger_generation_options(call, chat_id)
 
     async def _format_trigger_blacklist_lines(self, user_ids):
         lines = []
@@ -5733,6 +6633,9 @@ class ComfyImageGenMod(loader.Module):
 
     async def _ult_back_main(self, call: InlineCall):
         await self._ult_render_main(call)
+
+    async def _ult_back_additional_settings(self, call: InlineCall):
+        await self._ult_render_additional_settings(call)
 
     async def _ult_toggle_ai_enhance(self, call: InlineCall):
         settings = self._get_ult_settings()
@@ -5806,6 +6709,18 @@ class ComfyImageGenMod(loader.Module):
             pass
         await self._ult_render_trigger_generation(call, chat_id)
 
+    async def _ult_toggle_trigger_cloud_skip_confirm(self, call: InlineCall, chat_id):
+        if not self._is_comfy_cloud():
+            return await self._ult_render_trigger_generation(call, chat_id)
+        settings = self._get_trigger_settings_for_chat(chat_id)
+        settings["cloud_skip_confirm"] = not settings.get("cloud_skip_confirm", True)
+        self._set_trigger_settings_for_chat(chat_id, settings)
+        try:
+            await call.answer(self.strings("ult_trigger_saved"))
+        except Exception:
+            pass
+        await self._ult_render_trigger_generation(call, chat_id)
+
     async def _ult_toggle_trigger_autodelete(self, call: InlineCall, chat_id):
         settings = self._get_trigger_settings_for_chat(chat_id)
         settings["auto_delete"] = not settings["auto_delete"]
@@ -5862,6 +6777,16 @@ class ComfyImageGenMod(loader.Module):
     async def _ult_toggle_trigger_reject_russian(self, call: InlineCall, chat_id):
         settings = self._get_trigger_settings_for_chat(chat_id)
         settings["reject_russian_prompt"] = not settings.get("reject_russian_prompt", False)
+        self._set_trigger_settings_for_chat(chat_id, settings)
+        try:
+            await call.answer(self.strings("ult_trigger_saved"))
+        except Exception:
+            pass
+        await self._ult_render_trigger_generation(call, chat_id)
+
+    async def _ult_toggle_trigger_translate(self, call: InlineCall, chat_id):
+        settings = self._get_trigger_settings_for_chat(chat_id)
+        settings["translate_prompt"] = not settings.get("translate_prompt", False)
         self._set_trigger_settings_for_chat(chat_id, settings)
         try:
             await call.answer(self.strings("ult_trigger_saved"))
@@ -6490,37 +7415,164 @@ class ComfyImageGenMod(loader.Module):
         expected_names = self._cdown_expected_asset_names(state)
         if not expected_names:
             return None
-        params = [
-            ("include_tags", "models"),
-            ("include_public", "false"),
-            ("name_contains", expected_names[0]),
-            ("limit", "50"),
-            ("offset", "0"),
-            ("sort", "updated_at"),
-            ("order", "desc"),
-        ]
-        async with self._session_get(
-            f"{_COMFY_CLOUD_BASE_URL}/api/assets",
-            params=params,
-            headers=self._cloud_headers(api_key),
-            timeout=aiohttp.ClientTimeout(total=20),
-        ) as resp:
-            text = await resp.text()
-            if resp.status != 200:
-                logger.debug("Cloud asset readiness check failed (HTTP %s): %s", resp.status, text[:300])
-                return None
-            try:
-                data = json.loads(text) if text else {}
-            except json.JSONDecodeError:
-                logger.debug("Cloud asset readiness check returned non-JSON: %s", text[:300])
-                return None
-        assets = data.get("assets") if isinstance(data, dict) else []
-        if not isinstance(assets, list):
+        try:
+            assets = await self._clib_fetch_model_assets(api_key)
+        except Exception as e:
+            logger.debug("Cloud asset readiness check failed: %s", e)
             return None
         for asset in assets:
             if self._cdown_asset_matches(asset, expected_names):
                 return asset
         return None
+
+    async def _cdown_task_status(self, task_id, api_key=None):
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            return None
+        async with self._session_get(
+            f"{_COMFY_CLOUD_BASE_URL}/api/tasks/{quote(task_id, safe='')}",
+            headers=self._cloud_headers(api_key),
+            timeout=aiohttp.ClientTimeout(total=20),
+        ) as resp:
+            text = await resp.text()
+            if resp.status != 200:
+                logger.debug(
+                    "Cloud download task %s check failed (HTTP %s): %s",
+                    task_id,
+                    resp.status,
+                    text[:300],
+                )
+                return None
+            try:
+                data = json.loads(text) if text else {}
+            except json.JSONDecodeError:
+                logger.debug(
+                    "Cloud download task %s returned non-JSON: %s",
+                    task_id,
+                    text[:300],
+                )
+                return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _cdown_task_state(task):
+        if not isinstance(task, dict):
+            return ""
+        return str(
+            task.get("status")
+            or task.get("state")
+            or task.get("task_status")
+            or ""
+        ).strip().lower()
+
+    @staticmethod
+    def _cdown_task_message(task):
+        if not isinstance(task, dict):
+            return ""
+        for key in ("message", "error", "detail", "reason"):
+            value = task.get(key)
+            if value:
+                return str(value).strip()
+        return ""
+
+    async def _cdown_update_import_status(self, state, api_key=None):
+        result = state.get("result")
+        if not isinstance(result, dict) or result.get("status") in (200, "failed"):
+            return bool(isinstance(result, dict) and result.get("status") == 200)
+
+        task_id = str(result.get("task_id") or "").strip()
+        if task_id:
+            task = await self._cdown_task_status(task_id, api_key)
+            if task:
+                task_state = self._cdown_task_state(task)
+                task_message = self._cdown_task_message(task)
+                result["task_status"] = task_state or result.get("task_status") or "running"
+                if task_message:
+                    result["task_message"] = task_message
+                if task_state in {"failed", "error", "cancelled", "canceled"}:
+                    result["status"] = "failed"
+                    result["error"] = task_message or task_state
+                    return True
+
+        asset = await self._cdown_find_downloaded_asset(state, api_key)
+        if not asset:
+            return False
+        await self._cdown_finalize_asset_category(state, asset, api_key)
+        state["result"] = {
+            **result,
+            "status": 200,
+            "data": asset,
+            "task_status": result.get("task_status") or "completed",
+        }
+        self._cdown_start_lora_metadata_fetch(state, asset)
+        self._comfy_cache.clear()
+        return True
+
+    async def _cdown_finalize_asset_category(self, state, asset, api_key=None):
+        type_id = str((state or {}).get("type") or "").strip()
+        if type_id not in _CDOWN_TYPES or not isinstance(asset, dict):
+            return asset
+        try:
+            info = self._cdown_type_info(type_id)
+            tags = {
+                str(tag).strip().lower()
+                for tag in asset.get("tags") or []
+                if str(tag).strip()
+            }
+            metadata = asset.get("user_metadata")
+            folder = str((metadata or {}).get("folder") or "").strip().lower()
+            expected_tags = {str(tag).lower() for tag in info["tags"]}
+            expected_folders = {str(item).lower() for item in info["folder_aliases"]}
+            if (
+                self._clib_asset_type(asset) != type_id
+                or not expected_tags.issubset(tags)
+                or folder not in expected_folders
+            ):
+                await self._clib_update_asset_category(asset, type_id, api_key)
+        except Exception as e:
+            logger.debug("Cloud asset category finalization failed: %s", e)
+        return asset
+
+    def _cdown_start_lora_metadata_fetch(self, state, asset=None):
+        if not isinstance(state, dict) or state.get("civitai_metadata_started"):
+            return
+        if state.get("type") != _CDOWN_TYPE_LORA:
+            return
+        source_url = str(state.get("url") or "").strip()
+        if not (
+            self._extract_civitai_version_id(source_url)
+            or self._extract_civitai_model_id(source_url)
+        ):
+            return
+        lora_name = self._cloud_asset_model_name(asset)
+        if not lora_name:
+            lora_name = next(iter(self._cdown_expected_asset_names(state)), "")
+        if not lora_name:
+            return
+        state["civitai_metadata_started"] = True
+        task = asyncio.create_task(
+            self._cdown_fetch_lora_metadata(source_url, lora_name)
+        )
+        self._cdown_lora_metadata_tasks.add(task)
+        task.add_done_callback(self._cdown_lora_metadata_tasks.discard)
+
+    async def _cdown_fetch_lora_metadata(self, source_url, lora_name):
+        try:
+            version_id, triggers, base_model = await self._fetch_civitai_lora_triggers(
+                source_url,
+                filename=lora_name,
+            )
+            if version_id:
+                self._set_lora_metadata_entry(
+                    lora_name,
+                    triggers=triggers,
+                    civitai_version=version_id,
+                    civitai_base_model=base_model,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("Cloud LoRA Civitai metadata fetch failed: %s", e)
 
     def _cdown_cancel_watch(self, state_id):
         task = self._cdown_watch_tasks.pop(state_id, None)
@@ -6543,15 +7595,15 @@ class ComfyImageGenMod(loader.Module):
                 if not isinstance(state, dict):
                     return
                 result = state.get("result") if isinstance(state.get("result"), dict) else {}
-                if result.get("status") == 200:
+                if result.get("status") in (200, "failed"):
                     return
-                asset = await self._cdown_find_downloaded_asset(state, api_key)
-                if not asset:
+                changed = await self._cdown_update_import_status(state, api_key)
+                result = state.get("result") if isinstance(state.get("result"), dict) else {}
+                if not changed:
                     continue
-                state["result"] = {"status": 200, "data": asset}
-                self._comfy_cache.clear()
                 await self._cdown_render(target, state_id)
-                return
+                if result.get("status") in (200, "failed"):
+                    return
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -6560,6 +7612,220 @@ class ComfyImageGenMod(loader.Module):
             current = self._cdown_watch_tasks.get(state_id)
             if current is asyncio.current_task():
                 self._cdown_watch_tasks.pop(state_id, None)
+
+    async def _clib_fetch_model_assets(self, api_key=None):
+        assets = []
+        limit = 500
+        for model_tag in ("model", "models"):
+            offset = 0
+            while offset < 5000:
+                params = [
+                    ("include_tags", model_tag),
+                    ("include_public", "false"),
+                    ("limit", str(limit)),
+                    ("offset", str(offset)),
+                    ("sort", "updated_at"),
+                    ("order", "desc"),
+                ]
+                async with self._session_get(
+                    f"{_COMFY_CLOUD_BASE_URL}/api/assets",
+                    params=params,
+                    headers=self._cloud_headers(api_key),
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    text = await resp.text()
+                    if resp.status != 200:
+                        raise ComfyUIHTTPError(resp.status, text)
+                    try:
+                        data = json.loads(text) if text else {}
+                    except json.JSONDecodeError as e:
+                        raise ValueError(f"non-JSON response: {text[:300]}") from e
+                page = data.get("assets") if isinstance(data, dict) else []
+                if not isinstance(page, list):
+                    break
+                assets.extend(item for item in page if isinstance(item, dict))
+                if not isinstance(data, dict) or not data.get("has_more") or not page:
+                    break
+                offset += len(page)
+        unique = {
+            self._clib_asset_id(asset): asset
+            for asset in assets
+            if self._clib_asset_id(asset)
+        }
+        return sorted(
+            unique.values(),
+            key=lambda asset: self._cloud_asset_model_name(asset).lower()
+            if self._cloud_asset_model_name(asset)
+            else "",
+        )
+
+    def _clib_asset_folder(self, asset):
+        return str(self._cloud_asset_model_folder(asset) or "models")
+
+    def _clib_asset_type(self, asset):
+        metadata = asset.get("user_metadata") if isinstance(asset, dict) else None
+        type_id = str((metadata or {}).get("type") or "").strip()
+        if type_id in _CDOWN_TYPES:
+            return type_id
+        tags = {
+            str(tag).strip().lower()
+            for tag in (asset.get("tags") or []) if str(tag).strip()
+        }
+        folder = self._clib_asset_folder(asset).lower()
+        for candidate, info in _CDOWN_TYPES.items():
+            category_tags = {
+                tag.lower()
+                for tag in info["tags"]
+                if tag not in {"model", "models"}
+            }
+            category_tags.update(alias.lower() for alias in info["folder_aliases"])
+            aliases = {alias.lower() for alias in info["folder_aliases"]}
+            if category_tags & tags or folder in aliases:
+                return candidate
+        return None
+
+    def _clib_is_model_asset(self, asset):
+        if self._clib_asset_type(asset) in _CDOWN_TYPES:
+            return True
+        return self._is_model_filename(self._cloud_asset_model_name(asset))
+
+    @staticmethod
+    def _clib_asset_id(asset):
+        return str((asset or {}).get("id") or "").strip()
+
+    def _clib_asset_groups(self, assets):
+        groups = {}
+        for asset in assets or []:
+            if not self._clib_asset_id(asset) or not self._clib_is_model_asset(asset):
+                continue
+            groups.setdefault(self._clib_asset_folder(asset), []).append(asset)
+        for models in groups.values():
+            models.sort(
+                key=lambda asset: self._cloud_asset_model_name(asset).lower()
+                if self._cloud_asset_model_name(asset)
+                else ""
+            )
+        return dict(
+            sorted(
+                groups.items(),
+                key=lambda item: self._cloud_default_folder_sort_key(item[0]),
+            )
+        )
+
+    async def _clib_update_asset_category(self, asset, type_id, api_key=None):
+        if type_id not in _CDOWN_TYPES:
+            raise ValueError("Unknown model category")
+        if asset.get("is_immutable"):
+            raise ValueError(self.strings("clib_immutable"))
+        asset_id = self._clib_asset_id(asset)
+        if not asset_id:
+            raise ValueError("Cloud asset ID is missing")
+        info = self._cdown_type_info(type_id)
+        category_tags = {
+            tag.lower()
+            for item in _CDOWN_TYPES.values()
+            for tag in item["tags"]
+            if tag not in {"model", "models"}
+        }
+        category_tags.update(
+            alias.lower()
+            for item in _CDOWN_TYPES.values()
+            for alias in item["folder_aliases"]
+        )
+        tags = []
+        known = set()
+        for tag in asset.get("tags") or []:
+            tag = str(tag).strip()
+            if (
+                not tag
+                or tag.lower() in category_tags
+                or tag.lower() in {"model", "models"}
+                or tag.lower() in known
+            ):
+                continue
+            tags.append(tag)
+            known.add(tag.lower())
+        for tag in info["tags"]:
+            if tag.lower() not in known:
+                tags.append(tag)
+                known.add(tag.lower())
+        existing_tags = {
+            str(tag).strip().lower()
+            for tag in asset.get("tags") or []
+            if str(tag).strip()
+        }
+        requested_tags = {tag.lower() for tag in tags}
+        remove_tags = sorted(existing_tags - requested_tags)
+        add_tags = sorted(requested_tags - existing_tags)
+        tags_url = f"{_COMFY_CLOUD_BASE_URL}/api/assets/{quote(asset_id, safe='')}/tags"
+        if remove_tags:
+            async with self._session_delete(
+                tags_url,
+                json={"tags": remove_tags},
+                headers=self._cloud_headers(api_key),
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                text = await resp.text()
+                if resp.status != 200:
+                    raise ComfyUIHTTPError(resp.status, text)
+        if add_tags:
+            async with self._session_post(
+                tags_url,
+                json={"tags": add_tags},
+                headers=self._cloud_headers(api_key),
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                text = await resp.text()
+                if resp.status != 200:
+                    raise ComfyUIHTTPError(resp.status, text)
+        metadata = asset.get("user_metadata")
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        folder = await self._cdown_resolve_folder(type_id, api_key)
+        metadata.update({
+            "type": type_id,
+            "folder": folder or info["folder_aliases"][0],
+        })
+        async with self._session_put(
+            f"{_COMFY_CLOUD_BASE_URL}/api/assets/{quote(asset_id, safe='')}",
+            json={"user_metadata": metadata},
+            headers=self._cloud_headers(api_key),
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            text = await resp.text()
+            if resp.status != 200:
+                raise ComfyUIHTTPError(resp.status, text)
+        asset["tags"] = tags
+        asset["user_metadata"] = metadata
+        self._comfy_cache.clear()
+
+    async def _ensure_cloud_lora_assets_ready(self, selected_loras):
+        if not self._is_comfy_cloud() or not selected_loras:
+            return
+        requested = {
+            self._model_match_key(name)
+            for name in selected_loras
+            if self._model_match_key(name)
+        }
+        if not requested:
+            return
+        try:
+            assets = await self._clib_fetch_model_assets()
+            for asset in assets:
+                name = self._cloud_asset_model_name(asset)
+                if self._model_match_key(name) not in requested:
+                    continue
+                tags = {
+                    str(tag).strip().lower()
+                    for tag in asset.get("tags") or []
+                    if str(tag).strip()
+                }
+                metadata = asset.get("user_metadata")
+                folder = str((metadata or {}).get("folder") or "").lower()
+                expected_tags = set(self._cdown_type_info(_CDOWN_TYPE_LORA)["tags"])
+                if not expected_tags.issubset(tags) or "lora" not in folder:
+                    await self._clib_update_asset_category(asset, _CDOWN_TYPE_LORA)
+        except Exception as e:
+            logger.debug("Cloud LoRA asset preparation failed: %s", e)
 
     async def _raise_if_cloud_workflow_unsupported(self, workflow):
         if not self._is_comfy_cloud():
@@ -7030,11 +8296,12 @@ class ComfyImageGenMod(loader.Module):
                 file_obj = io.BytesIO(image_bytes)
                 file_obj.name = "comfy_tunnel_probe.png"
                 try:
-                    sent = await self.client.send_file(
+                    sent = await self._send_file_result(
                         utils.get_chat_id(message),
                         file_obj,
-                        caption=report,
+                        report,
                         reply_to=getattr(message, "reply_to_msg_id", None) or message.id,
+                        force_document=False,
                     )
                     if status and status.id != getattr(sent, "id", None):
                         try:
@@ -7463,6 +8730,7 @@ class ComfyImageGenMod(loader.Module):
             "ctools_workflow_no_output": "ctools_workflow_no_output",
             "no_images": "no_images",
             "output_too_large": "output_too_large",
+            "image_too_many_pixels": "image_too_many_pixels",
             "civitai_error": "civitai_error",
             "civitai_no_prompt": "civitai_no_prompt",
             "archive_access_lost": "ult_chat_access_lost",
@@ -7521,6 +8789,9 @@ class ComfyImageGenMod(loader.Module):
             text = text.format(utils.escape_html(details.get("kind") or "media"))
         elif error_type == "output_too_large":
             text = text.format(details.get("max_mb", self.config["max_output_mb"]))
+        elif error_type == "image_too_many_pixels":
+            max_pixels = details.get("max_pixels", self.config["max_image_pixels"])
+            text = text.format(f"{int(max_pixels) / 1000000:g}")
 
         if is_inline:
             text = self._to_inline_emoji(text)
@@ -7709,7 +8980,6 @@ class ComfyImageGenMod(loader.Module):
             if not self._self_has_premium:
                 form = await self.inline.form(message=message, text=inline_text)
             else:
-                # Keep the premium dummy step, but make the dummy itself useful if edit stalls.
                 form = await self.inline.form(message=message, text=inline_text)
                 try:
                     await form.edit(text=inline_text)
@@ -7902,6 +9172,8 @@ class ComfyImageGenMod(loader.Module):
             if "negative" in info["title"] and not negative_nid:
                 negative_nid = nid
 
+        if positive_nid == negative_nid:
+            negative_nid = None
         if positive_nid and negative_nid:
             return positive_nid, text_nodes[positive_nid]["field"], negative_nid, text_nodes[negative_nid]["field"]
 
@@ -7916,25 +9188,6 @@ class ComfyImageGenMod(loader.Module):
                 continue
             ct = node.get("class_type", "")
             inputs = node.get("inputs", {})
-            if ct == "ConditioningZeroOut":
-                src = self._trace_input(workflow, nid, "conditioning")
-                if src:
-                    traced = src
-                    for _ in range(10):
-                        if not traced or traced not in workflow:
-                            break
-                        if workflow[traced].get("class_type", "") in conditioning_consumers:
-                            negative_feeders.add(traced)
-                            break
-                        found_next = False
-                        for iv in workflow[traced].get("inputs", {}).values():
-                            if isinstance(iv, list) and len(iv) == 2:
-                                traced = str(iv[0])
-                                found_next = True
-                                break
-                        if not found_next:
-                            break
-
             if ct in ("CFGGuider", "KSampler", "KSamplerAdvanced", "SamplerCustom") or "positive" in inputs or "negative" in inputs:
                 role_by_input = {
                     "positive": "positive",
@@ -7949,6 +9202,12 @@ class ComfyImageGenMod(loader.Module):
                         traced = src
                         for _ in range(10):
                             if not traced or traced not in workflow:
+                                break
+                            if (
+                                role == "negative"
+                                and workflow[traced].get("class_type", "")
+                                == "ConditioningZeroOut"
+                            ):
                                 break
                             if workflow[traced].get("class_type", "") in conditioning_consumers:
                                 if role == "positive":
@@ -8072,6 +9331,9 @@ class ComfyImageGenMod(loader.Module):
                 )
                 negative_nid = resolved["node_id"]
                 neg_field = resolved["field"]
+        if positive_nid == negative_nid:
+            negative_nid = None
+            neg_field = None
         return positive_nid, pos_field, negative_nid, neg_field
 
     @staticmethod
@@ -9763,6 +11025,87 @@ class ComfyImageGenMod(loader.Module):
         finally:
             bio.close()
 
+    @staticmethod
+    def _extract_cloud_workflow_share(text):
+        for match in re.finditer(r"https?://[^\s<>\"']+", str(text or ""), re.IGNORECASE):
+            raw_url = match.group(0).rstrip(".,;:!?)]}")
+            try:
+                parsed = urlparse(raw_url)
+            except ValueError:
+                continue
+            if (parsed.hostname or "").lower() != "cloud.comfy.org":
+                continue
+            share_id = (parse_qs(parsed.query).get("share") or [""])[0].strip()
+            if re.fullmatch(r"[A-Za-z0-9_-]{6,128}", share_id):
+                return share_id, raw_url
+        return None, None
+
+    async def _load_workflow_json_from_cloud_share(self, share_id):
+        api_key = await self._select_cloud_api_key()
+        url = (
+            f"{_COMFY_CLOUD_BASE_URL}/api/workflows/published/"
+            f"{quote(str(share_id), safe='')}"
+        )
+        async with self._session_get(
+            url,
+            headers=self._cloud_headers(api_key),
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
+            text = await resp.text()
+            if resp.status != 200:
+                self._raise_cloud_http_error(resp.status, text)
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError as e:
+                raise ValueError("Cloud share returned invalid JSON") from e
+        if not isinstance(payload, dict):
+            raise ValueError("Cloud share returned an invalid workflow")
+        workflow = payload.get("workflow_json")
+        if isinstance(workflow, str):
+            try:
+                workflow = json.loads(workflow)
+            except json.JSONDecodeError as e:
+                raise ValueError("Cloud share workflow is invalid JSON") from e
+        if not isinstance(workflow, dict) or not workflow:
+            raise ValueError("Cloud share contains no workflow")
+        if len(json.dumps(workflow, ensure_ascii=False).encode("utf-8")) > 10 * 1024 * 1024:
+            raise ValueError("Cloud share workflow is too large")
+        await self._import_cloud_shared_workflow_assets(payload, share_id, api_key)
+        return self._normalize_workflow_format(workflow)
+
+    async def _import_cloud_shared_workflow_assets(self, payload, share_id, api_key):
+        assets = payload.get("assets") if isinstance(payload, dict) else None
+        asset_ids = [
+            str(asset.get("id") or "").strip()
+            for asset in assets or []
+            if isinstance(asset, dict)
+            and not asset.get("in_library")
+            and str(asset.get("id") or "").strip()
+        ]
+        if not asset_ids:
+            return
+        try:
+            async with self._session_post(
+                f"{_COMFY_CLOUD_BASE_URL}/api/assets/import",
+                json={
+                    "published_asset_ids": list(dict.fromkeys(asset_ids)),
+                    "share_id": str(share_id),
+                },
+                headers=self._cloud_headers(api_key),
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                text = await resp.text()
+                if resp.status != 200:
+                    logger.debug(
+                        "Cloud share assets import failed (HTTP %s): %s",
+                        resp.status,
+                        text[:500],
+                    )
+                    return
+            self._comfy_cache.clear()
+        except Exception as e:
+            logger.debug("Cloud share assets import failed: %s", e)
+
     async def _get_workflow_reply_name(self, message, fallback="workflow"):
         args = utils.get_args_raw(message).strip()
         if args:
@@ -9784,9 +11127,155 @@ class ComfyImageGenMod(loader.Module):
             file_name = file_name[:-5]
         return file_name or fallback
 
+    async def _get_cloud_imported_loras(self, execution_loras=None):
+        if not self._is_comfy_cloud():
+            return []
+        cache_key = "cloud_imported_loras"
+        if cache_key in self._comfy_cache:
+            return self._comfy_cache[cache_key]
+        execution_keys = {
+            self._model_match_key(name)
+            for name in execution_loras or []
+            if self._model_match_key(name)
+        }
+        assets = await self._clib_fetch_model_assets()
+        names = {}
+        for asset in assets:
+            name = self._cloud_asset_model_name(asset)
+            name_key = self._model_match_key(name)
+            if (
+                self._clib_asset_type(asset) != _CDOWN_TYPE_LORA
+                and name_key not in execution_keys
+            ):
+                continue
+            tags = {
+                str(tag).strip().lower()
+                for tag in asset.get("tags") or []
+                if str(tag).strip()
+            }
+            expected_tags = set(self._cdown_type_info(_CDOWN_TYPE_LORA)["tags"])
+            if (
+                self._clib_asset_type(asset) != _CDOWN_TYPE_LORA
+                or not expected_tags.issubset(tags)
+            ):
+                try:
+                    await self._clib_update_asset_category(asset, _CDOWN_TYPE_LORA)
+                except Exception as e:
+                    logger.debug("Cloud LoRA asset tag migration failed: %s", e)
+            if name:
+                names.setdefault(name.casefold(), name)
+        result = sorted(names.values(), key=str.casefold)
+        self._comfy_cache[cache_key] = result
+        return result
+
+    async def _get_available_lora_catalog(self):
+        if not self._is_comfy_cloud():
+            return {
+                "all": sorted(await self._get_local_models_folder("loras"), key=str.casefold),
+                "imported": [],
+            }
+        available = []
+        model_only_available = []
+        try:
+            info = await self._get_object_info("LoraLoader", attempts=1, timeout=8)
+            available = self._parse_object_info_list(info, "LoraLoader", "lora_name")
+        except Exception as e:
+            if not self._is_comfy_cloud():
+                raise
+            logger.debug("Cloud LoRA node list failed: %s", e)
+        try:
+            info = await self._get_object_info(
+                "LoraLoaderModelOnly", attempts=1, timeout=8
+            )
+            model_only_available = self._parse_object_info_list(
+                info, "LoraLoaderModelOnly", "lora_name"
+            )
+        except Exception as e:
+            if not self._is_comfy_cloud():
+                logger.debug("LoRA ModelOnly node list failed: %s", e)
+            else:
+                logger.debug("Cloud LoRA ModelOnly node list failed: %s", e)
+        cloud_loras = []
+        if self._is_comfy_cloud():
+            try:
+                cloud_loras = (await self._get_cloud_available_models_by_field()).get(
+                    "lora_name", []
+                )
+            except Exception as e:
+                logger.debug("Cloud LoRA model list failed: %s", e)
+        execution_loras = (
+            model_only_available
+            if self._is_comfy_cloud() and model_only_available
+            else [*model_only_available, *available, *cloud_loras]
+        )
+        imported = []
+        if self._is_comfy_cloud():
+            try:
+                imported = await self._get_cloud_imported_loras(execution_loras)
+            except Exception as e:
+                logger.debug("Cloud imported LoRA list failed: %s", e)
+        merged = {}
+        for name in execution_loras:
+            name = str(name or "").strip()
+            if name:
+                merged.setdefault(name.casefold(), name)
+        imported_keys = {
+            self._model_match_key(name)
+            for name in imported
+            if self._model_match_key(name)
+        }
+        imported_names = [
+            name
+            for name in merged.values()
+            if self._model_match_key(name) in imported_keys
+        ]
+        return {
+            "all": sorted(merged.values(), key=str.casefold),
+            "imported": sorted({name.casefold() for name in imported_names}),
+        }
+
     async def _get_available_loras(self):
-        info = await self._get_object_info("LoraLoader", attempts=1, timeout=8)
-        return self._parse_object_info_list(info, "LoraLoader", "lora_name")
+        return (await self._get_available_lora_catalog())["all"]
+
+    async def _ensure_lora_state_catalog(self, state):
+        if not isinstance(state, dict):
+            return [], []
+        all_loras = state.get("all_loras")
+        imported_loras = state.get("imported_loras")
+        if not isinstance(all_loras, list) or not isinstance(imported_loras, list):
+            catalog = await self._get_available_lora_catalog()
+            all_loras = list(catalog.get("all") or [])
+            imported_loras = list(catalog.get("imported") or [])
+            state["all_loras"] = all_loras
+            state["imported_loras"] = imported_loras
+        return all_loras, imported_loras
+
+    @staticmethod
+    def _lora_filter_mode(state):
+        mode = str((state or {}).get("filter_mode") or "").lower()
+        if mode in {"all", "favorites", "imported"}:
+            return mode
+        return "favorites" if (state or {}).get("favorites_only") else "all"
+
+    def _lora_filter_buttons(self, state_id, mode, callback, imported_loras):
+        choices = ["all", "favorites"]
+        if self._is_comfy_cloud() or imported_loras:
+            choices.append("imported")
+        labels = {
+            "all": "lora_filter_all",
+            "favorites": "lora_filter_favorites",
+            "imported": "lora_filter_imported",
+        }
+        buttons = [
+            {
+                "text": self.strings(labels[item]),
+                "callback": callback,
+                "args": (state_id, item),
+            }
+            for item in choices
+            if item != mode
+        ]
+        return self._build_button_rows(buttons, columns=2)
 
     async def _fetch_civitai_random_prompt(self):
         params = {
@@ -9796,10 +11285,15 @@ class ComfyImageGenMod(loader.Module):
             "nsfw": "false",
             "withMeta": "true",
         }
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "ComfyImageGen/0.1.0 (+https://github.com/mofko/MofkoModules)",
+        }
         try:
             async with self._session_get(
                 _CIVITAI_IMAGES_URL,
                 params=params,
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=20),
             ) as resp:
                 if resp.status != 200:
@@ -9844,30 +11338,24 @@ class ComfyImageGenMod(loader.Module):
         lowered = raw.lower()
         if lowered == "":
             return _DEFAULT_WORKFLOW_NAME
-        if lowered in ("t2i", "i2i", "anime"):
-            return _ANIME_WORKFLOW_NAME
         if lowered in ("anima", "animev2", "anime_v2", "anime-v2", "anime v2"):
             return _ANIME_V2_WORKFLOW_NAME
-        if lowered in ("zimageturbo", "z_image_turbo", "z-image-turbo", "z image turbo"):
-            return _Z_IMAGE_TURBO_WORKFLOW_NAME
-        if lowered in ("sdxlreal1", "sdxl_real1", "sdxl-real1", "sdxl real1"):
-            return _SDXL_REAL1_WORKFLOW_NAME
+        if lowered in ("anima2", "animev3", "anime_v3", "anime-v3", "anime v3"):
+            return _ANIME_V3_WORKFLOW_NAME
+        if lowered in ("ill", "anime_workflow", "anime-workflow", "anime workflow"):
+            return _ILL_WORKFLOW_NAME
+        if lowered in ("krea2", "krea_2", "krea-2", "krea 2"):
+            return _KREA2_WORKFLOW_NAME
         if lowered in ("sdxlreal2", "sdxl_real2", "sdxl-real2", "sdxl real2"):
             return _SDXL_REAL2_WORKFLOW_NAME
-        if lowered in ("ernie", "ernie workflow", "ernie_workflow", "ernie-workflow"):
-            return _ERNIE_WORKFLOW_NAME
-        if lowered in ("fluxedit", "flux_edit", "flux-edit", "flux edit", "fluxi2i", "flux_i2i", "flux-i2i"):
-            return _FLUX_EDIT_WORKFLOW_NAME
-        if lowered in ("qwenedit", "qwen_edit", "qwen-edit", "qwen edit", "cqwenedit", "c_qwenedit"):
-            return _CLOUD_QWEN_EDIT_WORKFLOW_NAME
-        if lowered in ("cill", "cloudill", "cloud_ill", "cloud-ill", "illcloud", "ill_cloud"):
-            return _CLOUD_ILL_WORKFLOW_NAME
-        if lowered in ("czit", "cloudzit", "cloud_zit", "cloud-zit", "zitcloud", "zit_cloud"):
-            return _CLOUD_ZIT_WORKFLOW_NAME
-        if lowered in ("canima2", "cloudanima2", "cloud_anima2", "cloud-anima2", "anima2cloud", "anima2_cloud"):
-            return _CLOUD_ANIMA2_WORKFLOW_NAME
+        if lowered in ("ckrea2", "cloudkrea2", "cloud_krea2", "cloud-krea2"):
+            return _CLOUD_KREA2_WORKFLOW_NAME
         if lowered in ("canima", "cloudanima", "cloud_anima", "cloud-anima", "animacloud", "anima_cloud"):
             return _CLOUD_ANIMA_WORKFLOW_NAME
+        if lowered in ("canima2", "cloudanima2", "cloud_anima2", "cloud-anima2", "anima2cloud", "anima2_cloud"):
+            return _CLOUD_ANIMA2_WORKFLOW_NAME
+        if lowered in ("cqwen", "cloudqwen", "cloud_qwen", "cloud-qwen", "qwencloud", "qwen_cloud"):
+            return _CLOUD_QWEN_WORKFLOW_NAME
         for workflow_name in self._all_builtin_workflows():
             if workflow_name.lower() == lowered:
                 return workflow_name
@@ -9880,30 +11368,26 @@ class ComfyImageGenMod(loader.Module):
 
     def _builtin_workflow_description(self, name):
         canonical_name = self._canonical_workflow_name(name)
-        if canonical_name == _ANIME_WORKFLOW_NAME:
-            return self.strings("wf_desc_anime")
         if canonical_name == _ANIME_V2_WORKFLOW_NAME:
             return self.strings("wf_desc_anime_v2")
-        if canonical_name == _Z_IMAGE_TURBO_WORKFLOW_NAME:
-            return self.strings("wf_desc_zimage_turbo")
-        if canonical_name == _SDXL_REAL1_WORKFLOW_NAME:
-            return self.strings("wf_desc_sdxl_real1")
+        if canonical_name == _ANIME_V3_WORKFLOW_NAME:
+            return self.strings("wf_desc_anime_v3")
+        if canonical_name == _ILL_WORKFLOW_NAME:
+            return self.strings("wf_desc_ill")
+        if canonical_name == _KREA2_WORKFLOW_NAME:
+            return self.strings("wf_desc_krea2")
         if canonical_name == _SDXL_REAL2_WORKFLOW_NAME:
             return self.strings("wf_desc_sdxl_real2")
-        if canonical_name == _ERNIE_WORKFLOW_NAME:
-            return self.strings("wf_desc_ernie")
-        if canonical_name == _FLUX_EDIT_WORKFLOW_NAME:
-            return self.strings("wf_desc_fluxedit")
-        if canonical_name == _CLOUD_QWEN_EDIT_WORKFLOW_NAME:
-            return self.strings("wf_desc_cloud_qwenedit")
-        if canonical_name == _CLOUD_ILL_WORKFLOW_NAME:
-            return self.strings("wf_desc_cloud_ill")
-        if canonical_name == _CLOUD_ZIT_WORKFLOW_NAME:
-            return self.strings("wf_desc_cloud_zit")
+        if canonical_name == _CLOUD_KREA2_WORKFLOW_NAME:
+            return self.strings("wf_desc_cloud_krea2")
         if canonical_name == _CLOUD_ANIMA_WORKFLOW_NAME:
             return self.strings("wf_desc_cloud_anima")
         if canonical_name == _CLOUD_ANIMA2_WORKFLOW_NAME:
             return self.strings("wf_desc_cloud_anima2")
+        if canonical_name == _CLOUD_ILL_WORKFLOW_NAME:
+            return self.strings("wf_desc_cloud_ill")
+        if canonical_name == _CLOUD_QWEN_WORKFLOW_NAME:
+            return self.strings("wf_desc_cloud_qwen")
         return ""
 
     def _custom_workflow_entry(self, name):
@@ -10138,24 +11622,7 @@ class ComfyImageGenMod(loader.Module):
                 return None
             workflow = json.loads(json.dumps(cached_wf))
             mapping = self._parse_workflow(workflow)
-            if name == _SDXL_REAL1_WORKFLOW_NAME:
-                mapping.update({
-                    "positive": {"node_id": "109", "field": "text"},
-                    "negative": {"node_id": "6", "field": "text"},
-                    "model": {"node_id": "3", "field": "ckpt_name"},
-                    "model_nodes": [{"node_id": "3", "field": "ckpt_name"}, {"node_id": "36", "field": "ckpt_name"}],
-                    "seed": {"node_id": "7", "field": "seed"},
-                    "steps": {"node_id": "7", "field": "steps"},
-                    "cfg": {"node_id": "7", "field": "cfg"},
-                    "sampler_name": {"node_id": "7", "field": "sampler_name"},
-                    "scheduler": {"node_id": "7", "field": "scheduler"},
-                    "denoise": {"node_id": "7", "field": "denoise"},
-                    "width": {"node_id": "18", "field": "width_override"},
-                    "height": {"node_id": "18", "field": "height_override"},
-                    "output": {"node_id": "128"},
-                    "output_regular": {"node_id": "128"},
-                })
-            elif name == _SDXL_REAL2_WORKFLOW_NAME:
+            if name == _SDXL_REAL2_WORKFLOW_NAME:
                 mapping.update({
                     "positive": {"node_id": "109", "field": "text"},
                     "negative": {"node_id": "6", "field": "text"},
@@ -10173,23 +11640,6 @@ class ComfyImageGenMod(loader.Module):
                     "output": {"node_id": "128"},
                     "output_regular": {"node_id": "128"},
                 })
-            elif name == _ERNIE_WORKFLOW_NAME:
-                mapping.update({
-                    "positive": {"node_id": "111", "field": "text"},
-                    "model": {"node_id": "124", "field": "unet_name"},
-                    "model_nodes": [{"node_id": "124", "field": "unet_name"}],
-                    "seed": {"node_id": "110", "field": "seed"},
-                    "steps": {"node_id": "110", "field": "steps"},
-                    "cfg": {"node_id": "110", "field": "cfg"},
-                    "sampler_name": {"node_id": "110", "field": "sampler_name"},
-                    "scheduler": {"node_id": "110", "field": "scheduler"},
-                    "denoise": {"node_id": "110", "field": "denoise"},
-                    "width": {"node_id": "107", "field": "width"},
-                    "height": {"node_id": "107", "field": "height"},
-                    "scale_by": {"node_id": "153", "field": "scale_by"},
-                    "output": {"node_id": "148"},
-                    "output_regular": {"node_id": "148"},
-                })
             return {
                 "workflow": workflow,
                 "mapping": mapping,
@@ -10206,7 +11656,7 @@ class ComfyImageGenMod(loader.Module):
             }
         return None
 
-    async def _ensure_builtin_workflow(self, wf_name=_ANIME_WORKFLOW_NAME, force=False):
+    async def _ensure_builtin_workflow(self, wf_name=_ANIME_V2_WORKFLOW_NAME, force=False):
         wf_name = self._canonical_workflow_name(wf_name)
         cache_key = self._builtin_workflow_cache_key(wf_name)
         if self.get(cache_key) and not force:
@@ -11076,8 +12526,24 @@ class ComfyImageGenMod(loader.Module):
                 return
             runtime = self._generation_runtime.get(client_id) or {}
             node_status = self._get_node_status_info(workflow, runtime.get("current_node_id"))
+            if node_status and node_status.get("complete_progress"):
+                is_progress = True
+                progress_pct = 100
+            stored_progress_pct = self._coerce_int(
+                runtime.get("progress_pct"),
+                0,
+                0,
+                100,
+            )
+            if is_progress:
+                stored_progress_pct = self._coerce_int(progress_pct, 0, 0, 100)
+                runtime["progress_pct"] = stored_progress_pct
             effective_status = status_text
-            if effective_status is None and node_status:
+            queue_running_statuses = {
+                self.strings("queue_comfy_running"),
+                self.strings("queue_comfy_running_ws_fallback"),
+            }
+            if node_status and (effective_status is None or effective_status in queue_running_statuses):
                 effective_status = node_status.get("text")
             duration_text = None
             if self._show_generation_time_progress():
@@ -11092,7 +12558,7 @@ class ComfyImageGenMod(loader.Module):
                 generation_state,
                 runtime,
                 queue_info=queue_info,
-                progress_pct=progress_pct if is_progress else None,
+                progress_pct=stored_progress_pct if is_progress else None,
             )
             if eta_seconds is not None:
                 eta_text = self._format_eta_value(eta_seconds)
@@ -11104,7 +12570,12 @@ class ComfyImageGenMod(loader.Module):
                 display_wf,
                 is_inline=status_is_inline,
                 is_progress=is_progress,
-                progress_pct=progress_pct,
+                progress_pct=stored_progress_pct,
+                show_progress_bar=(
+                    is_progress
+                    or "progress_pct" in runtime
+                    or runtime.get("phase") in ("running", "finishing")
+                ),
                 easter_egg=easter_egg,
                 status_text=effective_status,
                 generation_time=duration_text,
@@ -11302,8 +12773,6 @@ class ComfyImageGenMod(loader.Module):
                                     self._mark_runtime_finished(client_id, ddata, generation_state)
                     runtime = self._generation_runtime.get(client_id) or {}
                     pct = self._extract_ws_progress_pct(dtype, ddata, prompt_id, runtime.get("current_node_id"))
-                    if pct is not None and runtime is not None:
-                        runtime["progress_pct"] = pct
                     if status_form and ws_update_interval:
                         now = time.time()
                         if now - last_edit >= ws_update_interval:
@@ -11312,7 +12781,11 @@ class ComfyImageGenMod(loader.Module):
                                 runtime = self._generation_runtime.get(client_id) or {}
                                 node_status = self._get_node_status_info(workflow, runtime.get("current_node_id"))
                                 status_text = None
-                                has_progress = pct is not None
+                                has_progress = bool(
+                                    pct is not None
+                                    and node_status
+                                    and node_status.get("show_progress")
+                                )
                                 if node_status:
                                     if not has_progress or node_status.get("known"):
                                         status_text = node_status.get("text")
@@ -11938,6 +13411,28 @@ class ComfyImageGenMod(loader.Module):
                 pass
         return str(max_id + 1)
 
+    async def _get_local_models_folder(self, folder):
+        base = self._base_url()
+        if not base:
+            raise ValueError("ComfyUI URL is not configured")
+        cache_key = f"local_models:{base}:{folder}"
+        if cache_key in self._comfy_cache:
+            return self._comfy_cache[cache_key]
+        async with self._session_get(
+            f"{base}/models/{quote(folder, safe='')}",
+            timeout=aiohttp.ClientTimeout(total=_COMFY_TIMEOUTS["object_info"]),
+        ) as resp:
+            if resp.status == 404:
+                return []
+            if resp.status != 200:
+                raise ComfyUIHTTPError(resp.status, await resp.text())
+            data = await resp.json(content_type=None)
+        if not isinstance(data, list) or any(not isinstance(item, str) for item in data):
+            raise ValueError(f"Invalid ComfyUI model list for {folder}")
+        models = list(dict.fromkeys(data))
+        self._comfy_cache[cache_key] = models
+        return models
+
     async def _get_models_for_workflow_field(self, field):
         if self._is_comfy_cloud():
             cloud_fields = await self._get_cloud_available_models_by_field()
@@ -11945,17 +13440,12 @@ class ComfyImageGenMod(loader.Module):
                 return cloud_fields.get("unet_name", [])
             return cloud_fields.get(field, [])
         if field == "ckpt_name":
-            return self._parse_object_info_list(
-                await self._get_object_info("CheckpointLoaderSimple"),
-                "CheckpointLoaderSimple",
-                "ckpt_name",
-            )
+            return await self._get_local_models_folder("checkpoints")
         if field in ("unet_name", "diffusion_model", "diffusion_model_name"):
-            return self._parse_object_info_list(
-                await self._get_object_info("UNETLoader"),
-                "UNETLoader",
-                "unet_name",
-            )
+            models = []
+            for folder in ("diffusion_models", "unet_gguf", "unet"):
+                models.extend(await self._get_local_models_folder(folder))
+            return list(dict.fromkeys(models))
         if field in ("patch_name", "model_patch", "model_patch_name"):
             return (await self._get_available_models_by_field()).get(field, [])
         return []
@@ -12001,33 +13491,29 @@ class ComfyImageGenMod(loader.Module):
         kwargs = {"timeout": aiohttp.ClientTimeout(total=20)}
         if authenticated:
             kwargs["headers"] = self._comfy_headers()
-        try:
-            async with self._session_get(
-                f"{_COMFY_CLOUD_BASE_URL}/api/experiment/models",
-                **kwargs,
-            ) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    logger.debug("Cloud model folders failed (HTTP %s): %s", resp.status, text[:300])
-                    return []
-                data = await resp.json(content_type=None)
-        except Exception as e:
-            logger.debug("Cloud model folders failed: %s", e)
-            return []
+        async with self._session_get(
+            f"{_COMFY_CLOUD_BASE_URL}/api/experiment/models",
+            **kwargs,
+        ) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise ComfyUIHTTPError(resp.status, text)
+            data = await resp.json(content_type=None)
+        if not isinstance(data, list):
+            raise ValueError("Invalid Cloud model folders response")
 
         folders = []
-        if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict):
-                    name = item.get("name")
-                    paths = item.get("folders") if isinstance(item.get("folders"), list) else []
-                else:
-                    name = item
-                    paths = []
-                name = str(name or "").strip()
-                if not name:
-                    continue
-                folders.append({"name": name, "folders": [str(path) for path in paths if path]})
+        for item in data:
+            if isinstance(item, dict):
+                name = item.get("name")
+                paths = item.get("folders") if isinstance(item.get("folders"), list) else []
+            else:
+                name = item
+                paths = []
+            name = str(name or "").strip()
+            if not name:
+                continue
+            folders.append({"name": name, "folders": [str(path) for path in paths if path]})
         folders = sorted(folders, key=lambda item: item["name"].lower())
         self._comfy_cache[cache_key] = folders
         return folders
@@ -12043,28 +13529,26 @@ class ComfyImageGenMod(loader.Module):
         kwargs = {"timeout": aiohttp.ClientTimeout(total=20)}
         if authenticated:
             kwargs["headers"] = self._comfy_headers()
-        try:
-            async with self._session_get(
-                f"{_COMFY_CLOUD_BASE_URL}/api/experiment/models/{folder_path}",
-                **kwargs,
-            ) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    logger.debug("Cloud models folder %s failed (HTTP %s): %s", folder, resp.status, text[:300])
+        async with self._session_get(
+            f"{_COMFY_CLOUD_BASE_URL}/api/experiment/models/{folder_path}",
+            **kwargs,
+        ) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                if resp.status == 404:
                     return []
-                data = await resp.json(content_type=None)
-        except Exception as e:
-            logger.debug("Cloud models folder %s failed: %s", folder, e)
-            return []
+                raise ComfyUIHTTPError(resp.status, text)
+            data = await resp.json(content_type=None)
+        if not isinstance(data, list):
+            raise ValueError(f"Invalid Cloud model list for {folder}")
         models = []
-        if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict):
-                    name = item.get("name")
-                else:
-                    name = item
-                if name:
-                    models.append(str(name))
+        for item in data:
+            if isinstance(item, dict):
+                name = item.get("name")
+            else:
+                name = item
+            if name:
+                models.append(str(name))
         models = sorted(dict.fromkeys(models))
         self._comfy_cache[cache_key] = models
         return models
@@ -12090,18 +13574,26 @@ class ComfyImageGenMod(loader.Module):
                 return str(aliases[0])
         tags = {str(tag).lower() for tag in (asset.get("tags") or [])}
         tag_folders = (
+            ("checkpoints", "checkpoints"),
             ("checkpoint", "checkpoints"),
+            ("loras", "loras"),
             ("lora", "loras"),
             ("vae", "vae"),
             ("controlnet", "controlnet"),
+            ("upscale_models", "upscale_models"),
             ("upscale_model", "upscale_models"),
             ("embedding", "embeddings"),
+            ("text_encoders", "text_encoders"),
             ("text_encoder", "text_encoders"),
+            ("diffusion_models", "diffusion_models"),
             ("unet", "diffusion_models"),
             ("clip_vision", "clip_vision"),
             ("ipadapter", "ipadapter"),
+            ("style_models", "style_models"),
             ("style_model", "style_models"),
+            ("model_patches", "model_patches"),
             ("model_patch", "model_patches"),
+            ("sams", "sams"),
             ("sam", "sams"),
             ("llm", "LLM"),
         )
@@ -12115,42 +13607,12 @@ class ComfyImageGenMod(loader.Module):
         if cache_key in self._comfy_cache:
             return self._comfy_cache[cache_key]
 
-        assets = []
-        offset = 0
-        limit = 500
-        while True:
-            params = [
-                ("include_tags", "models"),
-                ("include_public", "false"),
-                ("limit", str(limit)),
-                ("offset", str(offset)),
-                ("sort", "updated_at"),
-                ("order", "desc"),
-            ]
-            async with self._session_get(
-                f"{_COMFY_CLOUD_BASE_URL}/api/assets",
-                params=params,
-                headers=self._comfy_headers(),
-                timeout=aiohttp.ClientTimeout(total=25),
-            ) as resp:
-                text = await resp.text()
-                if resp.status != 200:
-                    raise ComfyUIHTTPError(resp.status, text)
-                try:
-                    data = json.loads(text) if text else {}
-                except json.JSONDecodeError as e:
-                    raise ValueError(f"non-JSON response: {text[:300]}") from e
-            page_assets = data.get("assets") if isinstance(data, dict) else []
-            if isinstance(page_assets, list):
-                assets.extend(item for item in page_assets if isinstance(item, dict))
-            if not isinstance(data, dict) or not data.get("has_more") or not page_assets:
-                break
-            offset += len(page_assets)
-            if offset >= 5000:
-                break
+        assets = await self._clib_fetch_model_assets()
 
         groups = {}
         for asset in assets:
+            if not self._clib_is_model_asset(asset):
+                continue
             name = self._cloud_asset_model_name(asset)
             if not name:
                 continue
@@ -12182,6 +13644,14 @@ class ComfyImageGenMod(loader.Module):
                 models = await self._get_cloud_models_folder(folder_name)
                 if models:
                     fields.setdefault(field, set()).update(models)
+        try:
+            user_groups = await self._get_cloud_user_model_asset_groups()
+            for folder_name, models in user_groups.items():
+                field = self._cloud_model_field_from_folder(folder_name)
+                if field and models:
+                    fields.setdefault(field, set()).update(models)
+        except Exception as e:
+            logger.debug("Cloud imported model fields failed: %s", e)
         if "unet_name" in fields:
             fields["diffusion_model"] = set(fields["unet_name"])
             fields["diffusion_model_name"] = set(fields["unet_name"])
@@ -12211,41 +13681,10 @@ class ComfyImageGenMod(loader.Module):
         fields["diffusion_model"] = set(fields["unet_name"])
         fields["diffusion_model_name"] = set(fields["unet_name"])
 
-        object_info = await self._get_all_object_info()
-        if isinstance(object_info, dict):
-            for class_type, info in object_info.items():
-                class_l = str(class_type).lower()
-                if "patch" not in class_l:
-                    continue
-                input_data = info.get("input", {}) if isinstance(info, dict) else {}
-                candidates = {}
-                for section in ("required", "optional"):
-                    values = input_data.get(section, {})
-                    if isinstance(values, dict):
-                        candidates.update(values)
-                for field, raw in candidates.items():
-                    field_l = str(field).lower()
-                    if (
-                        field not in ("patch_name", "model_patch", "model_patch_name", "model_name")
-                        and "patch" not in field_l
-                        and "model" not in field_l
-                    ):
-                        continue
-                    values = []
-                    if isinstance(raw, list) and raw and isinstance(raw[0], list):
-                        values = [
-                            item
-                            for item in raw[0]
-                            if isinstance(item, str) and self._is_model_filename(item)
-                        ]
-                    elif isinstance(raw, list):
-                        values = [
-                            item
-                            for item in raw
-                            if isinstance(item, str) and self._is_model_filename(item)
-                        ]
-                    if values:
-                        fields.setdefault(field, set()).update(values)
+        patches = set(await self._get_local_models_folder("model_patches"))
+        if patches:
+            for field in ("patch_name", "model_patch", "model_patch_name"):
+                fields[field] = patches
 
         return {field: sorted(values) for field, values in fields.items() if values}
 
@@ -12272,8 +13711,12 @@ class ComfyImageGenMod(loader.Module):
         if not model:
             return ""
         model = model.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-        if "." in model:
-            model = model.rsplit(".", 1)[0]
+        model = re.sub(
+            r"\.(safetensors|ckpt|pt|pth|bin|gguf|onnx)$",
+            "",
+            model,
+            flags=re.IGNORECASE,
+        )
         return model.lower()
 
     @classmethod
@@ -12353,11 +13796,34 @@ class ComfyImageGenMod(loader.Module):
         self.set("cloud_model_as_workflow", bool(enabled))
 
     def _current_workflow_model(self):
-        wf_name = self._canonical_workflow_name(self.get("default_workflow", _DEFAULT_WORKFLOW_NAME))
+        wf_name = self._canonical_workflow_name(
+            self.get("default_workflow", _DEFAULT_WORKFLOW_NAME)
+        )
         wf_data = self._get_workflow_data(wf_name)
         if not wf_data:
             return None
         return self._get_workflow_primary_model(wf_data)
+
+    async def _autoswitch_model_to_workflow(self, wf_name):
+        if not self._workflow_model_autoswitch_enabled():
+            if self._is_comfy_cloud():
+                self._set_cloud_model_as_workflow(False)
+            return False
+        try:
+            wf_data = await self._ensure_workflow_data(wf_name)
+        except Exception as e:
+            logger.debug("Workflow model auto-switch failed: %s", e)
+            return False
+        if not isinstance(wf_data, dict):
+            return False
+        model = str(self._get_workflow_primary_model(wf_data) or "").strip()
+        if not model:
+            return False
+        if self._is_comfy_cloud():
+            self._set_cloud_model_as_workflow(True)
+            return True
+        self.config["model_name"] = model
+        return True
 
     async def _resolve_workflow_model_for_node(self, workflow, item, model, selected_fields, force_selected_model=False):
         nid = item.get("node_id")
@@ -12565,11 +14031,6 @@ class ComfyImageGenMod(loader.Module):
         denoise_to_use = denoise
         if limited_mode:
             denoise_to_use = None
-        elif denoise is None:
-            if input_filename:
-                denoise_to_use = 0.5
-            else:
-                denoise_to_use = 1.0
 
         if denoise_map and denoise_to_use is not None:
             nid = denoise_map["node_id"]
@@ -12746,27 +14207,242 @@ class ComfyImageGenMod(loader.Module):
         matches = sum(1 for phrase in self._REFUSAL_PHRASES if phrase in lower)
         return matches >= 2
 
+    @staticmethod
+    def _workflow_node(workflow, node_id):
+        if not isinstance(workflow, dict):
+            return None
+        return workflow.get(str(node_id)) or workflow.get(node_id)
+
+    def _comfy_text_prepare_workflow(self, workflow, user_prompt, model_name, input_filename=None):
+        workflow = self._normalize_workflow_format(json.loads(json.dumps(workflow)))
+        text_node_id = None
+        fallback_output_node_id = None
+        for node_id, node in workflow.items():
+            if not isinstance(node, dict):
+                continue
+            class_type = node.get("class_type")
+            inputs = node.get("inputs")
+            if class_type == "PreviewAny" and fallback_output_node_id is None:
+                fallback_output_node_id = str(node_id)
+            if class_type != "TextGenerate" or not isinstance(inputs, dict):
+                continue
+            prompt = inputs.get("prompt")
+            if not isinstance(prompt, str) or "USER_PROMPT" not in prompt or "TARGET_MODEL" not in prompt:
+                continue
+            inputs["prompt"] = prompt.replace(
+                "TARGET_MODEL", str(model_name or "unknown").strip()[:300]
+            ).replace("USER_PROMPT", str(user_prompt or "").strip()[:8000])
+            clip_link = inputs.get("clip")
+            clip_node_id = str(clip_link[0]) if isinstance(clip_link, (list, tuple)) and len(clip_link) >= 2 else None
+            clip_node = self._workflow_node(workflow, clip_node_id)
+            clip_inputs = clip_node.get("inputs") if isinstance(clip_node, dict) else {}
+            if (
+                isinstance(clip_inputs, dict)
+                and clip_inputs.get("clip_name") == _COMFY_TEXT_CLIP_NAME
+                and clip_inputs.get("type") == "ideogram4"
+                and not inputs["prompt"].lstrip().startswith("<|im_start|>")
+            ):
+                inputs["use_default_template"] = True
+                inputs["thinking"] = True
+            text_node_id = str(node_id)
+            break
+        if not text_node_id:
+            raise UserFacingError("comfy_text_invalid_workflow")
+        output_node_id = fallback_output_node_id
+        for node_id, node in workflow.items():
+            if not isinstance(node, dict) or node.get("class_type") != "PreviewAny":
+                continue
+            source = (node.get("inputs") or {}).get("source")
+            if isinstance(source, (list, tuple)) and len(source) >= 2 and str(source[0]) == text_node_id:
+                output_node_id = str(node_id)
+                break
+        if not output_node_id:
+            raise UserFacingError("comfy_text_invalid_workflow")
+        text_node = self._workflow_node(workflow, text_node_id)
+        inputs = text_node["inputs"]
+        image_link = inputs.get("image")
+        image_node_id = str(image_link[0]) if isinstance(image_link, (list, tuple)) and len(image_link) >= 2 else None
+        if input_filename:
+            image_node = self._workflow_node(workflow, image_node_id) if image_node_id else None
+            if not isinstance(image_node, dict) or image_node.get("class_type") != "LoadImage":
+                image_node_id = self._next_node_id(workflow)
+                workflow[image_node_id] = {
+                    "inputs": {"image": input_filename},
+                    "class_type": "LoadImage",
+                    "_meta": {"title": "Load Image (Dynamic)"},
+                }
+                inputs["image"] = [image_node_id, 0]
+            else:
+                image_node.setdefault("inputs", {})["image"] = input_filename
+        else:
+            inputs.pop("image", None)
+            if image_node_id:
+                still_used = any(
+                    isinstance(value, (list, tuple))
+                    and len(value) >= 2
+                    and str(value[0]) == image_node_id
+                    for node in workflow.values()
+                    if isinstance(node, dict)
+                    for value in (node.get("inputs") or {}).values()
+                )
+                if not still_used:
+                    workflow.pop(image_node_id, None)
+        return workflow, output_node_id, text_node_id
+
+    @staticmethod
+    def _comfy_text_history_values(value):
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, (list, tuple)):
+            result = []
+            for item in value:
+                result.extend(ComfyImageGenMod._comfy_text_history_values(item))
+            return result
+        if not isinstance(value, dict):
+            return []
+        result = []
+        for key in ("text", "generated_text", "result", "value", "source"):
+            if key in value:
+                result.extend(ComfyImageGenMod._comfy_text_history_values(value[key]))
+        return result
+
+    @staticmethod
+    def _comfy_text_error_detail(error):
+        if isinstance(error, ComfyUIHTTPError):
+            return f"ComfyUI HTTP {error.status}"
+        if isinstance(error, ComfyUIExecutionError):
+            try:
+                payload = json.loads(str(error))
+            except (TypeError, ValueError):
+                payload = {}
+            if isinstance(payload, dict):
+                message = payload.get("exception_message") or payload.get("message") or payload.get("error")
+                node_type = payload.get("node_type") or payload.get("class_type")
+                parts = [str(item) for item in (node_type, message) if item]
+                if parts:
+                    return ": ".join(parts)
+            return "ComfyUI execution error"
+        text = re.sub(r"\s+", " ", str(error or "")).strip()
+        return text[:240] or type(error).__name__
+
+    @classmethod
+    def _extract_comfy_text_result(cls, history, output_node_id, text_node_id=None):
+        outputs = history.get("outputs") if isinstance(history, dict) else None
+        if not isinstance(outputs, dict):
+            return ""
+        node_ids = (output_node_id, text_node_id, "6")
+        checked = set()
+        for node_id in node_ids:
+            if node_id is None or str(node_id) in checked:
+                continue
+            checked.add(str(node_id))
+            output = outputs.get(str(node_id)) or outputs.get(node_id)
+            if not isinstance(output, dict):
+                continue
+            values = cls._comfy_text_history_values(output.get("ui"))
+            if not values:
+                values = cls._comfy_text_history_values(output)
+            for value in values:
+                text = re.sub(r"<think>.*?</think>", "", str(value), flags=re.IGNORECASE | re.DOTALL)
+                final_parts = re.findall(
+                    r"(?:final\s+(?:answer|prompt)|final)\s*:\s*(.+)",
+                    text,
+                    flags=re.IGNORECASE | re.DOTALL,
+                )
+                if final_parts:
+                    text = final_parts[-1]
+                text = re.sub(r"^(?:improved\s+prompt|enhanced\s+prompt|prompt)\s*:\s*", "", text.strip(), flags=re.IGNORECASE)
+                text = re.sub(r"^(?:assistant|model)\s*[:,-]?\s*", "", text.strip(), flags=re.IGNORECASE)
+                text = " ".join(text.strip("`\\\"'* ").split())
+                if text:
+                    return " ".join(text.split()[:900])
+        return ""
+
+    async def _call_comfy_text_enhance(self, user_prompt, model_name, image_path=None):
+        if not self._base_url():
+            return None, "comfy_text_unavailable"
+        try:
+            source_workflow = await self._fetch_comfy_text_workflow()
+            input_filename = None
+            if image_path:
+                if not os.path.exists(image_path):
+                    return None, "comfy_text_failed"
+                input_filename = await self._upload_input_path_to_comfyui(
+                    image_path,
+                    os.path.basename(image_path),
+                    content_type=mimetypes.guess_type(image_path)[0],
+                )
+            workflow, output_node_id, text_node_id = self._comfy_text_prepare_workflow(
+                source_workflow,
+                user_prompt,
+                model_name,
+                input_filename=input_filename,
+            )
+            await self._raise_if_cloud_workflow_unsupported(workflow)
+            client_id = str(uuid.uuid4())
+            _, history = await self._wait_ws(
+                client_id,
+                lambda: self._retry(self._queue_prompt, workflow, client_id),
+                expected_output_node=None,
+                timeout=_COMFY_TEXT_ENHANCE_TIMEOUT,
+                workflow=workflow,
+            )
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            return None, "timeout"
+        except UserFacingError as e:
+            logger.warning("ComfyUI Text enhancement is unavailable: %s", e)
+            return None, e.key if e.key == "comfy_text_invalid_workflow" else "comfy_text_unavailable"
+        except Exception as e:
+            logger.warning("ComfyUI Text enhancement failed: %s", e)
+            return None, f"comfy_text_error:{self._comfy_text_error_detail(e)}"
+        result = self._extract_comfy_text_result(history, output_node_id, text_node_id)
+        return (result, None) if result else (None, "comfy_text_empty")
+
     async def _enhance_prompt(self, user_prompt: str, model_name: str, image_path=None):
         provider = self._get_prompt_provider()
-        system_prompt = await self._fetch_enhance_prompt(provider)
-        if not system_prompt:
-            return None, "error"
-        self._enhance_system_prompt = system_prompt
-
         prompt = str(user_prompt or "").strip()
 
-        if provider == "groq":
-            result, error = await self._call_groq_enhance(prompt, model_name)
-        elif provider == "openrouter":
-            result, error = await self._call_openrouter_enhance(prompt, model_name)
-        elif provider == "grok":
-            result, error = await self._call_grok_enhance(prompt, model_name)
-        elif provider == "deepseek":
-            if image_path:
-                return None, "vision_unsupported"
-            result, error = await self._call_deepseek_enhance(prompt, model_name, image_path=image_path)
+        if image_path and (not os.path.isfile(image_path) or not os.path.getsize(image_path)):
+            return None, "error"
+        if image_path and provider != _COMFY_TEXT_PROVIDER and not await self._provider_model_has_vision(provider):
+            return None, "vision_unsupported"
+
+        if provider == _COMFY_TEXT_PROVIDER:
+            result, error = await self._call_comfy_text_enhance(prompt, model_name, image_path=image_path)
         else:
-            result, error = await self._call_gemini_enhance(prompt, model_name)
+            system_prompt = await self._fetch_enhance_prompt(provider)
+            if not system_prompt:
+                return None, "error"
+            self._enhance_system_prompt = system_prompt
+
+        if provider == _COMFY_TEXT_PROVIDER:
+            pass
+        elif provider == "groq":
+            result, error = await self._call_groq_enhance(prompt, model_name, image_path=image_path)
+        elif provider == "openrouter":
+            result, error = await self._call_openrouter_enhance(prompt, model_name, image_path=image_path)
+        elif provider == "openai":
+            result, error = await self._call_openai_enhance(prompt, model_name, image_path=image_path)
+        elif provider == "grok":
+            result, error = await self._call_grok_enhance(prompt, model_name, image_path=image_path)
+        elif provider == "qwen":
+            result, error = await self._call_qwen_enhance(
+                prompt,
+                model_name,
+                image_path=image_path,
+            )
+        elif provider == "deepseek":
+            result, error = await self._call_deepseek_enhance(prompt, model_name, image_path=image_path)
+        elif provider == "nvidiaapi":
+            result, error = await self._call_nvidiaapi_enhance(
+                prompt,
+                model_name,
+                image_path=image_path,
+            )
+        else:
+            result, error = await self._call_gemini_enhance(prompt, model_name, image_path=image_path)
 
         if result:
             if self._is_refusal_response(result):
@@ -12774,7 +14450,7 @@ class ComfyImageGenMod(loader.Module):
             return result, None
         return None, error
 
-    async def _call_gemini_enhance(self, cleaned_prompt: str, model_name: str):
+    async def _call_gemini_enhance(self, cleaned_prompt: str, model_name: str, image_path=None):
         if not GENAI_AVAILABLE:
             return None, "dependency_missing"
         api_keys = self._get_provider_api_keys("gemini")
@@ -12782,14 +14458,14 @@ class ComfyImageGenMod(loader.Module):
             return None, "no_key"
         last_error = None
         for api_key in api_keys:
-            result, error = await self._call_gemini_enhance_with_key(cleaned_prompt, model_name, api_key)
+            result, error = await self._call_gemini_enhance_with_key(cleaned_prompt, model_name, api_key, image_path=image_path)
             if result or not self._enhance_error_rotates_key(error):
                 return result, error
             last_error = error
             logger.debug("Gemini API key failed with %s, trying next key", error)
         return None, last_error or "error"
 
-    async def _call_gemini_enhance_with_key(self, cleaned_prompt: str, model_name: str, api_key: str):
+    async def _call_gemini_enhance_with_key(self, cleaned_prompt: str, model_name: str, api_key: str, image_path=None):
         try:
             if not self._genai_client or self._genai_api_key != api_key:
                 self._genai_client = genai.Client(api_key=api_key)
@@ -12812,10 +14488,16 @@ class ComfyImageGenMod(loader.Module):
                 model=self._get_gemini_model(),
                 config=config,
             )
+            contents = [f"user_prompt: {cleaned_prompt}\ntarget_model: {model_name}"]
+            if image_path:
+                with open(image_path, "rb") as image_file:
+                    image_data = image_file.read()
+                contents.append(genai_types.Part.from_bytes(
+                    data=image_data,
+                    mime_type=mimetypes.guess_type(image_path)[0] or "image/png",
+                ))
             response = await asyncio.wait_for(
-                chat.send_message(
-                    f"user_prompt: {cleaned_prompt}\ntarget_model: {model_name}"
-                ),
+                chat.send_message(contents if image_path else contents[0]),
                 timeout=60,
             )
             if response.text:
@@ -12861,15 +14543,19 @@ class ComfyImageGenMod(loader.Module):
             return None, "error"
 
     async def _call_openai_compatible_enhance(
-        self, cleaned_prompt: str, model_name: str, api_key: str, base_url: str, models_list: list, provider_name: str, image_path=None,
+        self, cleaned_prompt: str, model_name: str, api_key: str, base_url: str, models_list: list, provider_name: str, image_path=None, extra_payload=None,
     ):
         last_error = None
         for model in models_list:
-            user_content = self._build_openai_compatible_user_content(
-                cleaned_prompt,
-                model_name,
-                image_path=image_path,
-            )
+            try:
+                user_content = self._build_openai_compatible_user_content(
+                    cleaned_prompt,
+                    model_name,
+                    image_path=image_path,
+                )
+            except (OSError, ValueError) as e:
+                logger.debug("Failed to prepare image for AI enhancement: %s", e)
+                return None, "error"
             payload = {
                 "model": model,
                 "messages": [
@@ -12879,6 +14565,14 @@ class ComfyImageGenMod(loader.Module):
                 "temperature": 1.0,
                 "max_tokens": 2048,
             }
+            if provider_name == "OpenAI":
+                payload.pop("temperature")
+                payload.pop("max_tokens")
+                payload["max_completion_tokens"] = 4096
+                if model.startswith(("gpt-5.5", "gpt-5.6")):
+                    payload["reasoning_effort"] = "low"
+            if isinstance(extra_payload, dict):
+                payload.update(extra_payload)
 
             try:
                 async with self._session_post(
@@ -12888,7 +14582,7 @@ class ComfyImageGenMod(loader.Module):
                         "Content-Type": "application/json",
                     },
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=30),
+                    timeout=aiohttp.ClientTimeout(total=90 if provider_name == "OpenAI" else 30),
                 ) as resp:
                     if resp.status in (401, 403):
                         return None, "expired"
@@ -12973,6 +14667,7 @@ class ComfyImageGenMod(loader.Module):
         models_list: list,
         provider_name: str,
         image_path=None,
+        extra_payload=None,
     ):
         api_keys = self._get_provider_api_keys(provider)
         if not api_keys:
@@ -12987,6 +14682,7 @@ class ComfyImageGenMod(loader.Module):
                 models_list,
                 provider_name,
                 image_path=image_path,
+                extra_payload=extra_payload,
             )
             if result or not self._enhance_error_rotates_key(error):
                 return result, error
@@ -12998,14 +14694,10 @@ class ComfyImageGenMod(loader.Module):
         text = f"user_prompt: {cleaned_prompt}\ntarget_model: {model_name}"
         if not image_path:
             return text
-        try:
-            with open(image_path, "rb") as f:
-                raw = f.read()
-        except Exception as e:
-            logger.debug("Failed to read image for AI enhancement: %s", e)
-            return text
+        with open(image_path, "rb") as f:
+            raw = f.read()
         if not raw:
-            return text
+            raise ValueError("Empty image for AI enhancement")
         mime = mimetypes.guess_type(image_path)[0] or "image/png"
         data_url = f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
         return [
@@ -13013,34 +14705,73 @@ class ComfyImageGenMod(loader.Module):
             {"type": "image_url", "image_url": {"url": data_url}},
         ]
 
-    async def _call_groq_enhance(self, cleaned_prompt: str, model_name: str):
+    async def _call_groq_enhance(self, cleaned_prompt: str, model_name: str, image_path=None):
+        models = self._get_provider_model_chain("groq")
+        if image_path:
+            models = [model for model in models if model == "qwen/qwen3.8-27b"]
         return await self._call_openai_compatible_enhance_with_keys(
             "groq", cleaned_prompt, model_name,
             "https://api.groq.com/openai/v1",
-            ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it"],
+            models,
             "Groq",
+            image_path=image_path,
         )
 
-    async def _call_openrouter_enhance(self, cleaned_prompt: str, model_name: str):
+    async def _call_openrouter_enhance(self, cleaned_prompt: str, model_name: str, image_path=None):
         return await self._call_openai_compatible_enhance_with_keys(
             "openrouter", cleaned_prompt, model_name,
             "https://openrouter.ai/api/v1",
             self._get_provider_model_chain("openrouter"),
             "OpenRouter",
+            image_path=image_path,
         )
 
-    async def _call_grok_enhance(self, cleaned_prompt: str, model_name: str):
+    async def _call_openai_enhance(self, cleaned_prompt: str, model_name: str, image_path=None):
+        return await self._call_openai_compatible_enhance_with_keys(
+            "openai", cleaned_prompt, model_name,
+            "https://api.openai.com/v1",
+            [self._get_provider_model("openai")],
+            "OpenAI",
+            image_path=image_path,
+        )
+
+    async def _call_grok_enhance(self, cleaned_prompt: str, model_name: str, image_path=None):
         return await self._call_openai_compatible_enhance_with_keys(
             "grok", cleaned_prompt, model_name,
             "https://api.x.ai/v1",
             self._get_provider_model_chain("grok"),
             "Grok",
+            image_path=image_path,
+        )
+
+    def _qwen_base_url(self):
+        base_url = str(self.config["qwen_base_url"] or "").strip().rstrip("/")
+        parsed = urlparse(base_url)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return base_url
+        return _QWEN_DEFAULT_BASE_URL
+
+    async def _call_qwen_enhance(self, cleaned_prompt: str, model_name: str, image_path=None):
+        models = self._get_provider_model_chain("qwen")
+        if not models:
+            return None, "model is not set"
+        return await self._call_openai_compatible_enhance_with_keys(
+            "qwen",
+            cleaned_prompt,
+            model_name,
+            self._qwen_base_url(),
+            models,
+            "Qwen",
+            image_path=image_path,
+            extra_payload={"enable_thinking": False},
         )
 
     async def _call_deepseek_enhance(self, cleaned_prompt: str, model_name: str, image_path=None):
-        if image_path:
+        if image_path and not await self._provider_model_has_vision("deepseek"):
             return None, "vision_unsupported"
         models = self._get_provider_model_chain("deepseek")
+        if image_path:
+            models = [model for model in models if await self._provider_model_has_vision("deepseek", model)]
         if not models:
             return None, "model is not set"
         return await self._call_openai_compatible_enhance_with_keys(
@@ -13048,6 +14779,22 @@ class ComfyImageGenMod(loader.Module):
             "https://api.deepseek.com",
             models,
             "DeepSeek",
+            image_path=image_path,
+        )
+
+    async def _call_nvidiaapi_enhance(self, cleaned_prompt: str, model_name: str, image_path=None):
+        models = self._get_provider_model_chain("nvidiaapi")
+        if image_path:
+            models = [model for model in models if await self._provider_model_has_vision("nvidiaapi", model)]
+        if not models:
+            return None, "model is not set"
+        return await self._call_openai_compatible_enhance_with_keys(
+            "nvidiaapi",
+            cleaned_prompt,
+            model_name,
+            "https://integrate.api.nvidia.com/v1",
+            models,
+            "NVIDIA API",
             image_path=image_path,
         )
 
@@ -13356,6 +15103,7 @@ class ComfyImageGenMod(loader.Module):
         class_lower = class_type.lower()
         key = None
         show_progress = False
+        complete_progress = False
 
         if class_type in ("CheckpointLoaderSimple", "UNETLoader", "VAELoader", "CLIPLoader", "UpscaleModelLoader", "SAMLoader", "UltralyticsDetectorProvider"):
             key = "fmt_loading_model"
@@ -13376,6 +15124,7 @@ class ComfyImageGenMod(loader.Module):
             show_progress = True
         elif class_type == "SaveImage":
             key = "fmt_saving_result"
+            complete_progress = True
         elif class_type in ("Power Lora Loader (rgthree)", "CR LoRA Stack", "CR Apply LoRA Stack"):
             key = "fmt_applying_lora"
         elif title:
@@ -13385,9 +15134,36 @@ class ComfyImageGenMod(loader.Module):
             fallback = title or class_type or str(node_id)
             return {"text": self.strings("fmt_running_node").format(utils.escape_html(fallback)), "show_progress": False, "known": False}
 
-        return {"text": self.strings(key), "show_progress": show_progress, "known": True}
+        return {
+            "text": self.strings(key),
+            "show_progress": show_progress,
+            "complete_progress": complete_progress,
+            "known": True,
+        }
 
-    def _format_status_text(self, prompt_display, model, wf_name, is_inline=False, is_progress=False, progress_pct=0, easter_egg=None, status_key=None, status_text=None, generation_time=None, generation_eta=None):
+    def _format_premium_progress_bar(self, progress_pct, is_inline=False):
+        if not self._self_has_premium:
+            return ""
+        progress_pct = self._coerce_int(progress_pct, 0, 0, 100)
+        filled_count = min(len(_PROGRESS_BAR_FILLED), progress_pct // 20)
+
+        def format_emoji(item):
+            emoji_id, char = item
+            if is_inline:
+                return self._inline_premium_emoji(emoji_id, char)
+            return f"<emoji document_id={emoji_id}>{char}</emoji>"
+
+        segments = [
+            format_emoji(item)
+            for item in _PROGRESS_BAR_FILLED[:filled_count]
+        ]
+        segments.extend(
+            format_emoji(_PROGRESS_BAR_EMPTY)
+            for _ in range(len(_PROGRESS_BAR_FILLED) - filled_count)
+        )
+        return f"{format_emoji(_PROGRESS_BAR_ICON)} {''.join(segments)}"
+
+    def _format_status_text(self, prompt_display, model, wf_name, is_inline=False, is_progress=False, progress_pct=0, easter_egg=None, status_key=None, status_text=None, generation_time=None, generation_eta=None, show_progress_bar=False):
         if is_inline:
             gen_emoji = '<tg-emoji emoji-id="4904936030232117798">\u2699\ufe0f</tg-emoji>'
         else:
@@ -13405,6 +15181,12 @@ class ComfyImageGenMod(loader.Module):
             header = f"{gen_emoji} {self.strings(status_key)}"
         else:
             header = f"{gen_emoji} {self.strings('fmt_generating')}"
+        if is_progress or show_progress_bar or (
+            not status_text and not status_key and not easter_header
+        ):
+            progress_bar = self._format_premium_progress_bar(progress_pct, is_inline)
+            if progress_bar:
+                header = f"{header}\n{progress_bar}"
         return self._apply_emoji_theme(self._format_gen_text(
             prompt_display,
             model,
@@ -13436,14 +15218,16 @@ class ComfyImageGenMod(loader.Module):
     def _normalize_selected_loras(self, selected_loras, available_loras=None):
         if not isinstance(selected_loras, dict):
             return {}
-        available = set(available_loras) if available_loras is not None else None
+        available = list(available_loras) if available_loras is not None else None
         normalized = {}
         for lora_name, weight in selected_loras.items():
             lora_name = str(lora_name).strip()
             if not lora_name:
                 continue
-            if available is not None and lora_name not in available:
-                continue
+            if available is not None:
+                lora_name = self._resolve_lora_catalog_name(lora_name, available)
+                if not lora_name:
+                    continue
             try:
                 weight = float(weight)
             except (TypeError, ValueError):
@@ -13454,14 +15238,16 @@ class ComfyImageGenMod(loader.Module):
     def _normalize_lora_preset_entries(self, selected_loras, available_loras=None):
         if not isinstance(selected_loras, dict):
             return {}
-        available = set(available_loras) if available_loras is not None else None
+        available = list(available_loras) if available_loras is not None else None
         normalized = {}
         for lora_name, value in selected_loras.items():
             lora_name = str(lora_name).strip()
             if not lora_name:
                 continue
-            if available is not None and lora_name not in available:
-                continue
+            if available is not None:
+                lora_name = self._resolve_lora_catalog_name(lora_name, available)
+                if not lora_name:
+                    continue
             if isinstance(value, dict):
                 enabled = bool(value.get("enabled"))
                 weight = value.get("weight", 0.75)
@@ -13477,6 +15263,299 @@ class ComfyImageGenMod(loader.Module):
                 "weight": round(max(0.1, min(2.0, weight)), 1),
             }
         return normalized
+
+    @classmethod
+    def _resolve_lora_catalog_name(cls, lora_name, available_loras):
+        lora_name = str(lora_name or "").strip()
+        if not lora_name:
+            return None
+        exact = {}
+        by_key = {}
+        for candidate in available_loras or []:
+            candidate = str(candidate or "").strip()
+            if not candidate:
+                continue
+            exact.setdefault(candidate.casefold(), candidate)
+            key = cls._model_match_key(candidate)
+            if key:
+                by_key.setdefault(key, []).append(candidate)
+        direct = exact.get(lora_name.casefold())
+        if direct:
+            return direct
+        matches = by_key.get(cls._model_match_key(lora_name), [])
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _normalize_lora_trigger_words(value):
+        if isinstance(value, str):
+            items = re.split(r"[,;\n]+", value)
+        elif isinstance(value, (list, tuple, set)):
+            items = value
+        else:
+            items = []
+        normalized = []
+        seen = set()
+        for item in items:
+            word = " ".join(str(item or "").split()).strip()[:120]
+            key = word.casefold()
+            if word and key not in seen:
+                normalized.append(word)
+                seen.add(key)
+            if len(normalized) >= 50:
+                break
+        return normalized
+
+    def _normalize_lora_metadata(self, metadata):
+        if not isinstance(metadata, dict):
+            return {}
+        normalized = {}
+        for lora_name, value in metadata.items():
+            lora_name = str(lora_name).strip()
+            if not lora_name:
+                continue
+            if isinstance(value, dict):
+                favorite = bool(value.get("favorite"))
+                note = str(value.get("note") or "").strip()[:500]
+                triggers = self._normalize_lora_trigger_words(value.get("triggers"))
+                auto_triggers = bool(value.get("auto_triggers"))
+                civitai_version = str(value.get("civitai_version") or "").strip()[:32]
+                civitai_base_model = str(value.get("civitai_base_model") or "").strip()[:80]
+            else:
+                favorite = bool(value)
+                note = ""
+                triggers = []
+                auto_triggers = False
+                civitai_version = ""
+                civitai_base_model = ""
+            if favorite or note or triggers or auto_triggers or civitai_version or civitai_base_model:
+                normalized[lora_name] = {
+                    "favorite": favorite,
+                    "note": note,
+                    "triggers": triggers,
+                    "auto_triggers": auto_triggers,
+                    "civitai_version": civitai_version,
+                    "civitai_base_model": civitai_base_model,
+                }
+        return normalized
+
+    def _get_lora_metadata(self):
+        metadata = self._normalize_lora_metadata(self.get("lora_metadata", {}))
+        self.set("lora_metadata", metadata)
+        return metadata
+
+    def _get_lora_metadata_entry(self, lora_name):
+        return self._get_lora_metadata().get(
+            str(lora_name).strip(),
+            {
+                "favorite": False,
+                "note": "",
+                "triggers": [],
+                "auto_triggers": False,
+                "civitai_version": "",
+                "civitai_base_model": "",
+            },
+        )
+
+    def _set_lora_metadata_entry(
+        self,
+        lora_name,
+        favorite=None,
+        note=None,
+        triggers=None,
+        auto_triggers=None,
+        civitai_version=None,
+        civitai_base_model=None,
+    ):
+        lora_name = str(lora_name).strip()
+        if not lora_name:
+            return
+        metadata = self._get_lora_metadata()
+        entry = metadata.get(
+            lora_name,
+            {
+                "favorite": False,
+                "note": "",
+                "triggers": [],
+                "auto_triggers": False,
+                "civitai_version": "",
+                "civitai_base_model": "",
+            },
+        )
+        if favorite is not None:
+            entry["favorite"] = bool(favorite)
+        if note is not None:
+            entry["note"] = str(note).strip()[:500]
+        if triggers is not None:
+            entry["triggers"] = self._normalize_lora_trigger_words(triggers)
+        if auto_triggers is not None:
+            entry["auto_triggers"] = bool(auto_triggers)
+        if civitai_version is not None:
+            entry["civitai_version"] = str(civitai_version or "").strip()[:32]
+        if civitai_base_model is not None:
+            entry["civitai_base_model"] = str(civitai_base_model or "").strip()[:80]
+        if (
+            entry.get("favorite")
+            or entry.get("note")
+            or entry.get("triggers")
+            or entry.get("auto_triggers")
+            or entry.get("civitai_version")
+            or entry.get("civitai_base_model")
+        ):
+            metadata[lora_name] = {
+                "favorite": bool(entry.get("favorite")),
+                "note": str(entry.get("note") or "").strip()[:500],
+                "triggers": self._normalize_lora_trigger_words(entry.get("triggers")),
+                "auto_triggers": bool(entry.get("auto_triggers")),
+                "civitai_version": str(entry.get("civitai_version") or "").strip()[:32],
+                "civitai_base_model": str(entry.get("civitai_base_model") or "").strip()[:80],
+            }
+        else:
+            metadata.pop(lora_name, None)
+        self.set("lora_metadata", metadata)
+
+    @staticmethod
+    def _extract_civitai_version_id(value):
+        text = str(value or "").strip()
+        if text.isdigit():
+            return text
+        for pattern in (
+            r"[?&]modelVersionId=(\d+)",
+            r"/model-versions/(\d+)",
+            r"/api/download/models/(\d+)",
+        ):
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return ""
+
+    @staticmethod
+    def _extract_civitai_model_id(value):
+        match = re.search(r"/models/(\d+)", str(value or ""), re.IGNORECASE)
+        return match.group(1) if match else ""
+
+    @classmethod
+    def _pick_civitai_model_version(cls, versions, filename=None):
+        if not isinstance(versions, list):
+            return None
+        filename_key = cls._model_match_key(filename)
+        if filename_key:
+            for version in versions:
+                if not isinstance(version, dict):
+                    continue
+                for file_info in version.get("files") or []:
+                    if isinstance(file_info, dict) and cls._model_match_key(file_info.get("name")) == filename_key:
+                        return version
+        return next((item for item in versions if isinstance(item, dict)), None)
+
+    async def _fetch_civitai_lora_triggers(self, value, filename=None):
+        version_id = self._extract_civitai_version_id(value)
+        model_id = self._extract_civitai_model_id(value) if not version_id else ""
+        try:
+            if version_id:
+                async with self._session_get(
+                    _CIVITAI_MODEL_VERSION_URL.format(version_id),
+                    timeout=aiohttp.ClientTimeout(total=15),
+                    headers={"User-Agent": "ComfyImageGen/0.1"},
+                ) as resp:
+                    if resp.status != 200:
+                        return version_id, [], ""
+                    data = await resp.json(content_type=None)
+            elif model_id:
+                async with self._session_get(
+                    _CIVITAI_MODEL_URL.format(model_id),
+                    timeout=aiohttp.ClientTimeout(total=15),
+                    headers={"User-Agent": "ComfyImageGen/0.1"},
+                ) as resp:
+                    if resp.status != 200:
+                        return None, [], ""
+                    model_data = await resp.json(content_type=None)
+                data = self._pick_civitai_model_version(
+                    model_data.get("modelVersions") if isinstance(model_data, dict) else [],
+                    filename,
+                )
+                if not isinstance(data, dict):
+                    return None, [], ""
+                version_id = str(data.get("id") or "").strip()
+                if not version_id:
+                    return None, [], ""
+            else:
+                return None, [], ""
+        except Exception as e:
+            logger.debug("Civitai LoRA trigger request failed: %s", e)
+            return version_id, [], ""
+        return (
+            version_id,
+            self._normalize_lora_trigger_words(
+                data.get("trainedWords") if isinstance(data, dict) else []
+            ),
+            str(data.get("baseModel") or "").strip() if isinstance(data, dict) else "",
+        )
+
+    def _apply_lora_trigger_words(self, positive, selected_loras):
+        positive = str(positive or "").strip()
+        normalized_positive = " ".join(positive.casefold().split())
+        additions = []
+        for lora_name in selected_loras:
+            metadata = self._get_lora_metadata_entry(lora_name)
+            if not metadata.get("auto_triggers"):
+                continue
+            for trigger in self._normalize_lora_trigger_words(metadata.get("triggers")):
+                normalized_trigger = " ".join(trigger.casefold().split())
+                if normalized_trigger and normalized_trigger not in normalized_positive:
+                    additions.append(trigger)
+                    normalized_positive = f"{normalized_positive}, {normalized_trigger}".strip(", ")
+        if not additions:
+            return positive
+        return ", ".join(part for part in (positive, *additions) if part)
+
+    def _is_lora_favorite(self, lora_name):
+        return bool(self._get_lora_metadata_entry(lora_name).get("favorite"))
+
+    def _get_lora_note(self, lora_name):
+        return str(self._get_lora_metadata_entry(lora_name).get("note") or "")
+
+    def _filter_loras(self, loras, mode="all", metadata=None, imported=None):
+        metadata = metadata if isinstance(metadata, dict) else self._get_lora_metadata()
+        if mode == "favorites":
+            return [
+                lora_name
+                for lora_name in loras
+                if metadata.get(lora_name, {}).get("favorite")
+            ]
+        if mode == "imported":
+            imported = {str(name).casefold() for name in imported or []}
+            return [
+                lora_name
+                for lora_name in loras
+                if str(lora_name).casefold() in imported
+            ]
+        return list(loras)
+
+    @staticmethod
+    def _filter_names_by_query(items, query):
+        query = " ".join(str(query or "").split()).casefold()
+        if not query:
+            return list(items or [])
+        query_tokens = re.findall(r"\w+", query, flags=re.UNICODE)
+        query_compact = "".join(query_tokens)
+        matches = []
+        for item in items or []:
+            value = str(item or "").casefold()
+            value_tokens = re.findall(r"\w+", value, flags=re.UNICODE)
+            value_compact = "".join(value_tokens)
+            if (
+                query in value
+                or (query_compact and query_compact in value_compact)
+                or (query_tokens and all(token in value for token in query_tokens))
+            ):
+                matches.append(item)
+        return sorted(
+            matches,
+            key=lambda item: (
+                0 if str(item).casefold().startswith(query) else 1,
+                str(item).casefold(),
+            ),
+        )
 
     def _get_enabled_lora_presets(self, selected_loras, available_loras=None):
         entries = self._normalize_lora_preset_entries(selected_loras, available_loras)
@@ -13494,19 +15573,46 @@ class ComfyImageGenMod(loader.Module):
             "selected": self._normalize_lora_preset_entries(data.get("selected")),
         }
 
-    def _get_global_lora_data(self):
-        data = self.get("global_lora_presets", None)
-        if data is None:
+    def _lora_preset_backend_key(self):
+        return (
+            _COMFY_BACKEND_CLOUD
+            if self._is_comfy_cloud()
+            else _COMFY_BACKEND_LOCAL
+        )
+
+    def _get_lora_presets_by_backend(self):
+        data = self.get("lora_presets_by_backend", None)
+        if isinstance(data, dict):
+            return {
+                key: self._normalize_lora_argset_data(value)
+                for key, value in data.items()
+                if key in {_COMFY_BACKEND_LOCAL, _COMFY_BACKEND_CLOUD}
+            }
+
+        legacy = self.get("global_lora_presets", None)
+        if legacy is None:
             saved = self.get("default_args", {})
-            if isinstance(saved, dict):
-                data = saved.get("lora")
-        data = self._normalize_lora_argset_data(data)
-        self.set("global_lora_presets", data)
+            legacy = saved.get("lora") if isinstance(saved, dict) else None
+        result = {}
+        if legacy is not None:
+            result[self._lora_preset_backend_key()] = self._normalize_lora_argset_data(
+                legacy
+            )
+        self.set("lora_presets_by_backend", result)
+        return result
+
+    def _get_global_lora_data(self):
+        presets_by_backend = self._get_lora_presets_by_backend()
+        data = self._normalize_lora_argset_data(
+            presets_by_backend.get(self._lora_preset_backend_key())
+        )
         return self._clone_argset_data(data)
 
     def _set_global_lora_data(self, data):
         data = self._normalize_lora_argset_data(data)
-        self.set("global_lora_presets", data)
+        presets_by_backend = self._get_lora_presets_by_backend()
+        presets_by_backend[self._lora_preset_backend_key()] = data
+        self.set("lora_presets_by_backend", presets_by_backend)
         return self._clone_argset_data(data)
 
     def _ensure_lora_argset_entry(self, saved):
@@ -14231,34 +16337,17 @@ class ComfyImageGenMod(loader.Module):
             logger.debug("Failed to delete ComfyIdeas direct init message: %s", e)
         return True
 
+    async def _cshare_send_file_standard(self, peer, file_obj, **kwargs):
+        if hasattr(file_obj, "seek"):
+            file_obj.seek(0)
+        return await self.client.send_file(peer, file_obj, **kwargs)
+
     async def _cshare_send_file(self, target, file_obj, **kwargs):
-        reply_to = self._cshare_reply_to(target)
-        if reply_to is not None:
-            try:
-                return await self._cshare_send_file_raw(target, file_obj, reply_to, **kwargs)
-            except Exception as e:
-                if self._is_monoforum_reply_error(e) and await self._cshare_try_init_direct(target):
-                    if hasattr(file_obj, "seek"):
-                        file_obj.seek(0)
-                    try:
-                        return await self._cshare_send_file_raw(target, file_obj, reply_to, **kwargs)
-                    except Exception as retry_error:
-                        if not self._can_retry_cshare_fallback(retry_error):
-                            raise
-                fallback = self._cshare_fallback_target(target)
-                if not fallback or not self._can_retry_cshare_fallback(e):
-                    raise
-                kwargs.pop("reply_to", None)
-                if hasattr(file_obj, "seek"):
-                    file_obj.seek(0)
-                try:
-                    return await self.client.send_file(fallback, file_obj, **kwargs)
-                except Exception as fallback_error:
-                    if self._is_monoforum_reply_error(fallback_error):
-                        raise e
-                    raise
+        kwargs.pop("reply_to", None)
         try:
-            return await self.client.send_file(self._cshare_peer(target), file_obj, **kwargs)
+            return await self._cshare_send_file_standard(
+                self._cshare_peer(target), file_obj, **kwargs
+            )
         except Exception as e:
             fallback = self._cshare_fallback_target(target)
             if not fallback or not self._can_retry_cshare_fallback(e):
@@ -14267,34 +16356,16 @@ class ComfyImageGenMod(loader.Module):
             if hasattr(file_obj, "seek"):
                 file_obj.seek(0)
             try:
-                return await self.client.send_file(fallback, file_obj, **kwargs)
+                return await self._cshare_send_file_standard(
+                    fallback, file_obj, **kwargs
+                )
             except Exception as fallback_error:
                 if self._is_monoforum_reply_error(fallback_error):
                     raise e
                 raise
 
     async def _cshare_send_message(self, target, text, **kwargs):
-        reply_to = self._cshare_reply_to(target)
-        if reply_to is not None:
-            try:
-                return await self._cshare_send_message_raw(target, text, reply_to, **kwargs)
-            except Exception as e:
-                if self._is_monoforum_reply_error(e) and await self._cshare_try_init_direct(target):
-                    try:
-                        return await self._cshare_send_message_raw(target, text, reply_to, **kwargs)
-                    except Exception as retry_error:
-                        if not self._can_retry_cshare_fallback(retry_error):
-                            raise
-                fallback = self._cshare_fallback_target(target)
-                if not fallback or not self._can_retry_cshare_fallback(e):
-                    raise
-                kwargs.pop("reply_to", None)
-                try:
-                    return await self.client.send_message(fallback, text, **kwargs)
-                except Exception as fallback_error:
-                    if self._is_monoforum_reply_error(fallback_error):
-                        raise e
-                    raise
+        kwargs.pop("reply_to", None)
         try:
             return await self.client.send_message(self._cshare_peer(target), text, **kwargs)
         except Exception as e:
@@ -14308,69 +16379,6 @@ class ComfyImageGenMod(loader.Module):
                 if self._is_monoforum_reply_error(fallback_error):
                     raise e
                 raise
-
-    async def _response_message_from_updates(self, result, peer):
-        candidates = [result, *(getattr(result, "updates", None) or [])]
-        for candidate in candidates:
-            message = getattr(candidate, "message", None)
-            if message is not None:
-                return message
-            message_id = getattr(candidate, "id", None)
-            if message_id is None:
-                continue
-            try:
-                message = await self.client.get_messages(peer, ids=message_id)
-                if message:
-                    return message
-            except Exception as e:
-                logger.debug("Could not resolve sent message %s: %s", message_id, e)
-        return None
-
-    async def _cshare_send_file_raw(self, target, file_obj, reply_to, **kwargs):
-        if not (InputMediaUploadedDocument and DocumentAttributeFilename):
-            raise UserFacingError("cshare_direct_unavailable", self._plain_text(self.strings("cshare_direct_unavailable")))
-        if hasattr(file_obj, "seek"):
-            file_obj.seek(0)
-        filename = getattr(file_obj, "name", None) or "file.bin"
-        uploaded = await self.client.upload_file(file_obj, file_name=filename)
-        caption = kwargs.get("caption") or ""
-        try:
-            text, entities = self.client.parse_mode.parse(caption)
-        except Exception:
-            text, entities = caption, []
-        media = InputMediaUploadedDocument(
-            file=uploaded,
-            mime_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
-            attributes=[DocumentAttributeFilename(filename)],
-        )
-        peer = await self.client.get_input_entity(self._cshare_peer(target))
-        request = SendMediaRequest(
-            peer=peer,
-            media=media,
-            message=text,
-            random_id=random.getrandbits(63),
-            reply_to=reply_to,
-            entities=entities or [],
-        )
-        result = await self.client(request)
-        return await self._response_message_from_updates(result, peer)
-
-    async def _cshare_send_message_raw(self, target, text, reply_to, **kwargs):
-        try:
-            parsed_text, entities = self.client.parse_mode.parse(text)
-        except Exception:
-            parsed_text, entities = text, []
-        peer = await self.client.get_input_entity(self._cshare_peer(target))
-        request = SendMessageRequest(
-            peer=peer,
-            message=parsed_text,
-            random_id=random.getrandbits(63),
-            no_webpage=not kwargs.get("link_preview", False),
-            reply_to=reply_to,
-            entities=entities or [],
-        )
-        result = await self.client(request)
-        return await self._response_message_from_updates(result, peer)
 
     async def _resolve_cshare_direct_target(self):
         channel = await self.client.get_entity("comfyideas")
@@ -14428,20 +16436,6 @@ class ComfyImageGenMod(loader.Module):
 
         if not monoforum:
             raise UserFacingError("cshare_direct_unavailable", self._plain_text(self.strings("cshare_direct_unavailable")))
-
-        if InputReplyToMonoForum:
-            try:
-                try:
-                    self_peer = await self.client.get_input_entity(self.tg_id)
-                except Exception:
-                    self_peer = await self.client.get_input_entity("me")
-                return {
-                    "peer": monoforum,
-                    "reply_to": InputReplyToMonoForum(monoforum_peer_id=self_peer),
-                    "fallback": monoforum,
-                }
-            except Exception as e:
-                logger.debug("Failed to resolve self input peer for ComfyIdeas monoforum: %s", e)
 
         return {"peer": monoforum}
 
@@ -14885,6 +16879,17 @@ class ComfyImageGenMod(loader.Module):
             return True
         return bool(gens_chat.get("chat_id"))
 
+    @staticmethod
+    def _close_archive_media_source(media_source):
+        sources = media_source if isinstance(media_source, (list, tuple)) else (media_source,)
+        for source in sources:
+            if isinstance(source, (bytes, bytearray, tuple)):
+                continue
+            try:
+                source.close()
+            except Exception:
+                pass
+
     async def _send_generation_duplicate_background(self, media_source, caption, state=None, media_filename=None, media_kind="image"):
         start = time.monotonic()
         async with self._archive_semaphore:
@@ -14903,9 +16908,16 @@ class ComfyImageGenMod(loader.Module):
                 logger.warning("Generation archive save failed: %s", e)
             except Exception as e:
                 logger.exception("Generation archive save failed: %s", e)
+            finally:
+                self._close_archive_media_source(media_source)
 
     def _schedule_generation_duplicate(self, media_source, caption, state=None, media_filename=None, media_kind="image"):
         if self._unloading or media_source is None:
+            self._close_archive_media_source(media_source)
+            return None
+        if len(self._archive_tasks) >= _ARCHIVE_MAX_PENDING:
+            logger.warning("Generation archive skipped because the background queue is full")
+            self._close_archive_media_source(media_source)
             return None
         task = asyncio.create_task(
             self._send_generation_duplicate_background(
@@ -14927,8 +16939,11 @@ class ComfyImageGenMod(loader.Module):
             "gemini": self.strings("ult_ai_key_path"),
             "groq": self.strings("ult_ai_key_path"),
             "openrouter": self.strings("ult_ai_key_path"),
+            "openai": self.strings("ult_ai_key_path"),
             "grok": self.strings("ult_ai_key_path"),
+            "qwen": self.strings("ult_ai_key_path"),
             "deepseek": self.strings("ult_ai_key_path"),
+            "nvidiaapi": self.strings("ult_ai_key_path"),
         }
 
         if error == "no_key":
@@ -14950,6 +16965,19 @@ class ComfyImageGenMod(loader.Module):
             return self.strings("enhance_service_error").format(provider_name)
         if error == "vision_unsupported":
             return self.strings("enhance_vision_unsupported").format(provider_name)
+        if error == "comfy_text_unavailable":
+            return self.strings("provider_comfy_text_unavailable")
+        if error == "comfy_text_empty":
+            return self.strings("provider_comfy_text_empty")
+        if error == "comfy_text_failed":
+            return self.strings("provider_comfy_text_failed")
+        if error == "comfy_text_invalid_workflow":
+            return self.strings("provider_comfy_text_invalid_workflow")
+        if str(error).startswith("comfy_text_error:"):
+            detail = str(error).split(":", 1)[1].strip()
+            return self.strings("provider_comfy_text_error").format(
+                utils.escape_html(detail)
+            )
         return self.strings("enhance_error").format(
             provider_name, utils.escape_html(str(error))
         )
@@ -14958,7 +16986,33 @@ class ComfyImageGenMod(loader.Module):
         if selected_loras is None:
             selected_loras = state.get("selected_loras")
         selected_loras = self._normalize_selected_loras(selected_loras)
+        if selected_loras and self._is_comfy_cloud():
+            await self._ensure_cloud_lora_assets_ready(selected_loras)
+            catalog = await self._get_available_lora_catalog()
+            resolved_loras = self._normalize_selected_loras(
+                selected_loras,
+                catalog.get("all"),
+            )
+            if len(resolved_loras) != len(selected_loras):
+                unresolved = [
+                    name
+                    for name in selected_loras
+                    if not self._resolve_lora_catalog_name(name, catalog.get("all"))
+                ]
+                raise UserFacingError(
+                    "lora_cloud_unavailable",
+                    self._plain_text(
+                        self.strings("lora_cloud_unavailable").format(
+                            ", ".join(unresolved[:5])
+                        )
+                    ),
+                )
+            selected_loras = resolved_loras
         state["selected_loras"] = dict(selected_loras)
+        state["positive"] = self._apply_lora_trigger_words(
+            state.get("positive"),
+            selected_loras,
+        )
         display_positive, display_model, display_wf = self._build_display_bundle(state)
         easter_egg = state.get("easter_egg")
 
@@ -15034,6 +17088,7 @@ class ComfyImageGenMod(loader.Module):
                 self._cleanup_input_file(state)
                 return
 
+        generation_slot_acquired = False
         if self._semaphore.locked():
             try:
                 queue_text = self._format_status_text(
@@ -15051,7 +17106,9 @@ class ComfyImageGenMod(loader.Module):
             except Exception:
                 pass
 
-        async with self._semaphore:
+        await self._semaphore.acquire()
+        generation_slot_acquired = True
+        try:
             self._set_generation_phase(client_id, "preparing")
             if self._unloading:
                 try:
@@ -15149,11 +17206,29 @@ class ComfyImageGenMod(loader.Module):
                 )
 
                 if selected_loras:
-                    prepared_workflow = self._inject_loras(
+                    prepared_workflow, lora_result = self._inject_loras(
                         prepared_workflow,
                         wf_data,
                         selected_loras,
                     )
+                    if not lora_result.get("supported"):
+                        raise UserFacingError(
+                            "lora_apply_unsupported",
+                            self._plain_text(
+                                self.strings("lora_apply_unsupported")
+                            ),
+                        )
+                    capacity = lora_result.get("capacity")
+                    if capacity is not None and len(selected_loras) > capacity:
+                        raise UserFacingError(
+                            "lora_apply_slots",
+                            self._plain_text(
+                                self.strings("lora_apply_slots").format(
+                                    capacity,
+                                    len(selected_loras),
+                                )
+                            ),
+                        )
 
                 prepared_workflow = self._apply_cloud_batch_size(
                     prepared_workflow,
@@ -15218,8 +17293,6 @@ class ComfyImageGenMod(loader.Module):
 
                 media_bio = None
                 source_media_bios = []
-                source_media_payloads = []
-                media_bytes = None
                 archive_media_source = None
                 archive_media_filename = None
                 try:
@@ -15228,7 +17301,6 @@ class ComfyImageGenMod(loader.Module):
                         for item in media_infos:
                             source_media_bios.append(await self._retry(self._retrieve_comfy_media, item, "image"))
                         media_bio = source_media_bios[0]
-                        source_media_payloads = await utils.run_sync(self._clone_media_payloads, source_media_bios)
                     else:
                         media_bio = await self._retry(self._retrieve_comfy_media, media_info, media_kind)
                     logger.debug("Generation media retrieve finished in %.2fs", time.monotonic() - retrieve_started)
@@ -15239,8 +17311,6 @@ class ComfyImageGenMod(loader.Module):
                         or self.config["output_format"] == "document_png"
                         or media_size > 50 * 1024 * 1024
                     )
-                    if not send_as_file:
-                        media_bytes = await utils.run_sync(self._read_file_bytes, media_bio)
                     generation_time = None
                     if self._show_generation_time_result():
                         generation_time = self._format_generation_time_value(
@@ -15282,12 +17352,36 @@ class ComfyImageGenMod(loader.Module):
                             ]
                         )
 
+                    if generation_slot_acquired:
+                        self._semaphore.release()
+                        generation_slot_acquired = False
                     send_started = time.monotonic()
                     if media_kind == "image":
-                        if len(source_media_payloads) > 1:
-                            sent_message = await self._send_file_group_result(
+                        if len(source_media_bios) > 1:
+                            as_document = self.config["output_format"] == "document_png"
+                            prepared_files = []
+                            try:
+                                if as_document or not send_as_file:
+                                    for source_bio in source_media_bios:
+                                        prepared_files.append(
+                                            await self._prepare_image_upload_file(source_bio, as_document)
+                                        )
+                                sent_message = await self._send_file_group_result(
+                                    state["chat_id"],
+                                    prepared_files or source_media_bios,
+                                    result_caption,
+                                    reply_to=state["reply_to"],
+                                    force_document=as_document or send_as_file,
+                                    send_as_self=send_result_as_self,
+                                    auto_delete_delay=auto_delete_delay,
+                                )
+                            finally:
+                                for prepared_file in prepared_files:
+                                    prepared_file.close()
+                        elif self.config["output_format"] == "document_png":
+                            sent_message = await self._send_result(
                                 state["chat_id"],
-                                source_media_payloads,
+                                media_bio,
                                 result_caption,
                                 reply_to=state["reply_to"],
                                 force_document=True,
@@ -15305,7 +17399,7 @@ class ComfyImageGenMod(loader.Module):
                         else:
                             sent_message = await self._send_result(
                                 state["chat_id"],
-                                media_bytes,
+                                media_bio,
                                 result_caption,
                                 reply_to=state["reply_to"],
                                 spoiler=generation_caption_hidden,
@@ -15322,23 +17416,23 @@ class ComfyImageGenMod(loader.Module):
                         )
                     logger.debug("Generation Telegram send finished in %.2fs", time.monotonic() - send_started)
                     self._increment_total_generation_count()
-                    if auto_delete_delay and sent_message:
+                    if auto_delete_delay and sent_message and not (media_kind == "image" and len(source_media_bios) > 1):
                         self._track_auto_delete(sent_message, auto_delete_delay)
                     self._record_generation_duration_stat(state)
-                    if self._generation_archive_enabled():
-                        if len(source_media_payloads) > 1:
-                            archive_media_source = list(source_media_payloads)
-                        elif media_bytes is not None:
-                            archive_media_source = media_bytes
+                    if self._generation_archive_enabled() and len(self._archive_tasks) < _ARCHIVE_MAX_PENDING:
+                        if len(source_media_bios) > 1:
+                            archive_media_source = source_media_bios
+                            source_media_bios = []
+                            media_bio = None
                         else:
-                            archive_payloads = await utils.run_sync(self._clone_media_payloads, [media_bio])
-                            if archive_payloads:
-                                archive_media_source, archive_media_filename = archive_payloads[0]
+                            archive_media_source = media_bio
+                            archive_media_filename = getattr(media_bio, "name", None)
+                            media_bio = None
                         self._schedule_generation_duplicate(
                             archive_media_source,
                             caption,
                             state,
-                            media_filename=archive_media_filename or getattr(media_bio, "name", None),
+                            media_filename=archive_media_filename,
                             media_kind=media_kind,
                         )
                 finally:
@@ -15349,7 +17443,6 @@ class ComfyImageGenMod(loader.Module):
                             source_bio.close()
                         except Exception:
                             pass
-                    del media_bytes
 
                 self._store_last_generation(state)
 
@@ -15377,6 +17470,9 @@ class ComfyImageGenMod(loader.Module):
                     self._active_cloud_api_key.set(None)
                 self._active_generations = max(0, self._active_generations - 1)
                 self._cleanup_input_file(state)
+        finally:
+            if generation_slot_acquired:
+                self._semaphore.release()
 
     async def _launch_generation_flow(self, target, state: dict):
         if state.get("use_lora_picker"):
@@ -15384,6 +17480,9 @@ class ComfyImageGenMod(loader.Module):
             lora_state = dict(state)
             lora_state["selected"] = self._normalize_lora_preset_entries(state.get("lora_entries"))
             lora_state["page"] = 0
+            lora_state["favorites_only"] = False
+            lora_state["filter_mode"] = "all"
+            lora_state["search_query"] = ""
             self._lora_states[state_id] = lora_state
             status_target = target
             if isinstance(target, Message):
@@ -15562,7 +17661,7 @@ class ComfyImageGenMod(loader.Module):
 
     def _parse_cloud_cost_range(self, description):
         text = str(description or "")
-        credit_word = "\u043a\u0440\u0435\u0434"
+        credit_word = r"(?:\u043a\u0440\u0435\u0434\w*|credits?)"
         range_match = re.search(
             rf"(\d+(?:[.,]\d+)?)\s*(?:-|\u2013|\u2014)\s*(\d+(?:[.,]\d+)?)\s*{credit_word}",
             text,
@@ -15579,9 +17678,14 @@ class ComfyImageGenMod(loader.Module):
             return value, value
         return None
 
+    def _cloud_cost_workflow_name(self, wf_name):
+        wf_name = self._canonical_workflow_name(wf_name)
+        return _CLOUD_WORKFLOW_COST_ALIASES.get(wf_name, wf_name)
+
     async def _estimate_cloud_cost(self, state):
         wf_name = state.get("wf_name") or self.get("default_workflow", _DEFAULT_CLOUD_WORKFLOW_NAME)
-        cost_range = self._parse_cloud_cost_range(self._workflow_description(wf_name))
+        cost_wf_name = self._cloud_cost_workflow_name(wf_name)
+        cost_range = self._parse_cloud_cost_range(self._workflow_description(cost_wf_name))
         if not cost_range:
             return None
         batch = self._coerce_int(state.get("cloud_batch"), 1, 1, 8)
@@ -15659,7 +17763,7 @@ class ComfyImageGenMod(loader.Module):
             self.strings("cloud_confirm_prompt"),
             self._cloud_confirm_prompt_text(state.get("positive")),
         ]
-        text = "\n".join(lines)
+        text = "<blockquote expandable>" + "\n".join(lines) + "</blockquote>"
 
         markup = [
             [
@@ -15941,84 +18045,85 @@ class ComfyImageGenMod(loader.Module):
         except Exception:
             pass
 
-    def _prepare_output_image(self, image_bytes, as_document):
-        img_buf = io.BytesIO(image_bytes)
-        img = None
-        out = io.BytesIO()
+    def _max_image_pixels(self):
+        return self._coerce_int(self.config["max_image_pixels"], 40000000, 0, 400000000)
+
+    def _ensure_safe_photo_pixels(self, image):
+        max_pixels = self._max_image_pixels()
+        if max_pixels and image.width * image.height > max_pixels:
+            raise UserFacingError("image_too_many_pixels", max_pixels=max_pixels)
+
+    @staticmethod
+    def _image_source_stream(image_source):
+        if isinstance(image_source, (bytes, bytearray)):
+            return io.BytesIO(image_source), None
         try:
-            img = Image.open(img_buf)
+            duplicate = os.fdopen(os.dup(image_source.fileno()), "rb")
+            duplicate.seek(0)
+            return duplicate, image_source
+        except Exception:
+            position = image_source.tell()
+            image_source.seek(0)
+            return image_source, (image_source, position)
+
+    @staticmethod
+    def _restore_image_source(source, restore_target):
+        try:
+            if isinstance(restore_target, tuple):
+                restore_target[0].seek(restore_target[1])
+            elif restore_target is not None:
+                restore_target.seek(0)
+        except Exception:
+            pass
+        if source is not restore_target and not isinstance(restore_target, tuple):
+            try:
+                source.close()
+            except Exception:
+                pass
+
+    def _prepare_output_image(self, image_source, as_document):
+        source, restore_target = self._image_source_stream(image_source)
+        img = None
+        converted = None
+        out = tempfile.NamedTemporaryFile(
+            mode="w+b",
+            prefix="comfyimagegen_result_",
+            suffix=".png" if as_document else ".jpg",
+        )
+        try:
+            img = Image.open(source)
             if as_document:
-                if img.mode not in ("RGBA", "RGB"):
-                    img = img.convert("RGBA")
-                img.save(out, format="PNG")
-                out.seek(0)
-                out.name = "comfyui_result.png"
+                converted = img if img.mode in ("RGBA", "RGB") else img.convert("RGBA")
+                converted.save(out, format="PNG")
             else:
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
-                img.save(out, format="JPEG", quality=95)
-                out.seek(0)
-                out.name = "comfyui_result.jpg"
+                self._ensure_safe_photo_pixels(img)
+                converted = img if img.mode == "RGB" else img.convert("RGB")
+                converted.save(out, format="JPEG", quality=95)
+            out.seek(0)
             return out
         except Exception:
             out.close()
             raise
         finally:
+            if converted is not None and converted is not img:
+                converted.close()
             if img:
                 img.close()
-            img_buf.close()
+            self._restore_image_source(source, restore_target)
 
-    async def _send_spoiler_photo_result(self, chat_id, image_bytes, caption, reply_to=None, send_as_self=False):
-        if not InputMediaUploadedPhoto:
-            raise RuntimeError("InputMediaUploadedPhoto is unavailable")
-        caption = self._apply_emoji_theme(caption)
+    async def _prepare_image_upload_file(self, image_source, as_document=False):
+        async with self._image_processing_semaphore:
+            return await utils.run_sync(self._prepare_output_image, image_source, as_document)
 
-        try:
-            out = await utils.run_sync(self._prepare_output_image, image_bytes, False)
-        except Exception as e:
-            logger.error("Failed to process image: %s: %s", type(e).__name__, e)
-            logger.exception(e)
-            raise ValueError("Failed to process image") from e
-
-        try:
-            out.seek(0)
-            uploaded = await self.client.upload_file(out, file_name=getattr(out, "name", "comfyui_result.jpg"))
-            try:
-                text, entities = self.client.parse_mode.parse(caption or "")
-            except Exception:
-                text, entities = caption or "", []
-            request_reply_to = reply_to
-            if (
-                reply_to is not None
-                and InputReplyToMessage
-                and isinstance(reply_to, int)
-            ):
-                request_reply_to = InputReplyToMessage(reply_to_msg_id=reply_to)
-            peer = await self.client.get_input_entity(chat_id)
-            request_kwargs = {
-                "peer": peer,
-                "media": InputMediaUploadedPhoto(file=uploaded, spoiler=True),
-                "message": text,
-                "random_id": random.getrandbits(63),
-                "reply_to": request_reply_to,
-                "entities": entities or [],
-            }
-            if send_as_self and InputPeerSelf:
-                request_kwargs["send_as"] = InputPeerSelf()
-            try:
-                request = SendMediaRequest(**request_kwargs)
-            except TypeError:
-                request_kwargs.pop("send_as", None)
-                request = SendMediaRequest(**request_kwargs)
-            result = await self.client(request)
-            return await self._response_message_from_updates(result, peer)
-        except Exception as e:
-            logger.error("Failed to send spoiler photo: %s: %s", type(e).__name__, e)
-            logger.exception(e)
-            raise ValueError("Telegram send failed") from e
-        finally:
-            out.close()
-            del out
+    async def _send_prepared_result_file(self, chat_id, file_obj, send_kwargs, send_as_self):
+        file_obj.seek(0)
+        if send_as_self:
+            return await self._send_file_as_self_if_possible(chat_id, file_obj, **send_kwargs)
+        return await self.client.send_file(
+            self._send_peer_candidate(chat_id),
+            file_obj,
+            **send_kwargs,
+        )
 
     @staticmethod
     def _exception_chain_text(exc):
@@ -16037,16 +18142,15 @@ class ComfyImageGenMod(loader.Module):
         peer_id = self._peer_id_value(chat_id)
         return peer_id if peer_id is not None else chat_id
 
-    async def _send_result(self, chat_id, image_bytes, caption, reply_to=None, force_document=False, spoiler=False, log_errors=True, send_as_self=False):
+    async def _send_result(self, chat_id, image_source, caption, reply_to=None, force_document=False, spoiler=False, log_errors=True, send_as_self=False):
         caption = self._apply_emoji_theme(caption)
         output_format = self.config["output_format"]
         as_document = force_document or output_format == "document_png"
 
-        if spoiler and not as_document:
-            return await self._send_spoiler_photo_result(chat_id, image_bytes, caption, reply_to=reply_to, send_as_self=send_as_self)
-
         try:
-            out = await utils.run_sync(self._prepare_output_image, image_bytes, as_document)
+            out = await self._prepare_image_upload_file(image_source, as_document)
+        except UserFacingError:
+            raise
         except Exception as e:
             logger.error("Failed to process image: %s: %s", type(e).__name__, e)
             logger.exception(e)
@@ -16058,10 +18162,14 @@ class ComfyImageGenMod(loader.Module):
                 "reply_to": reply_to,
                 "force_document": as_document,
             }
-            if send_as_self:
-                sent_message = await self._send_file_as_self_if_possible(chat_id, out, **send_kwargs)
-            else:
-                sent_message = await self.client.send_file(self._send_peer_candidate(chat_id), out, **send_kwargs)
+            if spoiler and not as_document:
+                send_kwargs["spoiler"] = True
+            sent_message = await self._send_prepared_result_file(
+                chat_id,
+                out,
+                send_kwargs,
+                send_as_self,
+            )
         except Exception as e:
             if log_errors:
                 logger.error("Failed to send image: %s: %s", type(e).__name__, e)
@@ -16091,19 +18199,21 @@ class ComfyImageGenMod(loader.Module):
                 logger.exception(e)
             raise ValueError(f"Telegram send failed: {self._exception_chain_text(e)}") from e
 
-    async def _send_file_group_result(self, chat_id, file_objs, caption, reply_to=None, force_document=True, log_errors=True, send_as_self=False):
+    async def _send_file_group_result(self, chat_id, file_objs, caption, reply_to=None, force_document=True, log_errors=True, send_as_self=False, auto_delete_delay=None):
         caption = self._apply_emoji_theme(caption)
         if file_objs and all(isinstance(item, tuple) for item in file_objs):
             files = self._payloads_to_files(file_objs)
+            close_original_files = True
         else:
             files = [
                 file_obj
                 for file_obj in (file_objs or [])
                 if file_obj
             ]
-            files = self._payloads_to_files(self._clone_media_payloads(files))
+            close_original_files = False
         if not files:
             raise ValueError("No media files to send")
+        original_files = list(files)
         try:
             for file_obj in files:
                 file_obj.seek(0)
@@ -16121,7 +18231,13 @@ class ComfyImageGenMod(loader.Module):
                     **send_kwargs,
                 )
             if isinstance(sent, list):
+                if auto_delete_delay:
+                    for message in sent:
+                        if message:
+                            self._track_auto_delete(message, auto_delete_delay)
                 return sent[0] if sent else None
+            if auto_delete_delay and sent:
+                self._track_auto_delete(sent, auto_delete_delay)
             return sent
         except Exception as e:
             if log_errors:
@@ -16129,11 +18245,12 @@ class ComfyImageGenMod(loader.Module):
                 logger.exception(e)
             raise ValueError(f"Telegram send failed: {self._exception_chain_text(e)}") from e
         finally:
-            for file_obj in files:
-                try:
-                    file_obj.close()
-                except Exception:
-                    pass
+            if close_original_files:
+                for file_obj in original_files:
+                    try:
+                        file_obj.close()
+                    except Exception:
+                        pass
 
     async def _schedule_delete_message(self, message_to_delete: Message, delay: int):
         try:
@@ -16383,14 +18500,28 @@ class ComfyImageGenMod(loader.Module):
         if not self.get("argset_active_model_key"):
             self.set("argset_active_model_key", self._argset_profile_key())
 
-    def _argset_profile_key(self, wf_name=None, model_name=None):
+    def _argset_profile_model_name(self, wf_name=None, model_name=None):
         wf_name = self._canonical_workflow_name(
             wf_name or self.get("default_workflow", _DEFAULT_WORKFLOW_NAME)
         )
-        model_name = str(
-            model_name if model_name is not None else self.config["model_name"]
-        ).strip() or "default"
-        return f"{wf_name}\n{model_name}"
+        if model_name is not None:
+            return str(model_name).strip() or "default"
+        if self._is_comfy_cloud() and self._cloud_model_as_workflow():
+            workflow_model = self._get_workflow_primary_model(
+                self._get_workflow_data(wf_name)
+            )
+            if workflow_model:
+                return str(workflow_model).strip()
+        return str(self.config["model_name"] or "").strip() or "default"
+
+    def _argset_profile_key(self, wf_name=None, model_name=None):
+        return self._argset_profile_model_name(wf_name, model_name)
+
+    def _legacy_argset_profile_key(self, wf_name=None, model_name=None):
+        wf_name = self._canonical_workflow_name(
+            wf_name or self.get("default_workflow", _DEFAULT_WORKFLOW_NAME)
+        )
+        return f"{wf_name}\n{self._argset_profile_model_name(wf_name, model_name)}"
 
     def _sync_argset_for_current_model(self, force=False):
         profile_key = self._argset_profile_key()
@@ -16412,6 +18543,13 @@ class ComfyImageGenMod(loader.Module):
         if not isinstance(profiles, dict):
             profiles = {}
         profile = profiles.get(profile_key)
+        if not isinstance(profile, dict):
+            legacy_key = self._legacy_argset_profile_key()
+            legacy_profile = profiles.get(legacy_key)
+            if isinstance(legacy_profile, dict):
+                profile = legacy_profile
+                profiles[profile_key] = self._clone_argset_data(legacy_profile)
+                self.set("model_arg_profiles", profiles)
         if isinstance(profile, dict):
             saved = self._normalize_default_args(self._clone_argset_data(profile))
         else:
@@ -16945,6 +19083,9 @@ class ComfyImageGenMod(loader.Module):
             state_id = str(uuid.uuid4())
             self._argset_lora_states[state_id] = {
                 "page": 0,
+                "favorites_only": False,
+                "filter_mode": "all",
+                "search_query": "",
                 "selected": self._normalize_lora_preset_entries(lora_data.get("selected")),
             }
         await self._render_argset_lora_list(call, state_id)
@@ -16953,28 +19094,59 @@ class ComfyImageGenMod(loader.Module):
         state = self._argset_lora_states.get(state_id)
         if not state:
             return
-        all_loras = await self._get_available_loras()
+        try:
+            all_loras, imported_loras = await self._ensure_lora_state_catalog(state)
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as e:
+            logger.warning("Could not load ComfyUI LoRA list: %s", e)
+            return await self._safe_answer(call_or_message, self.strings("lora_load_failed"))
         if not all_loras:
             return await self._safe_answer(call_or_message, self.strings("lora_none_available"))
         state["selected"] = self._normalize_lora_preset_entries(state.get("selected"), all_loras)
-        page = state["page"]
+        filter_mode = self._lora_filter_mode(state)
+        state["filter_mode"] = filter_mode
+        metadata = self._get_lora_metadata()
+        visible_loras = self._filter_loras(
+            all_loras,
+            filter_mode,
+            metadata,
+            imported_loras,
+        )
+        search_query = " ".join(str(state.get("search_query") or "").split())
+        visible_loras = self._filter_names_by_query(visible_loras, search_query)
+        page = int(state.get("page") or 0)
         per_page = 6
-        total_pages = max(1, (len(all_loras) + per_page - 1) // per_page)
+        total_pages = max(1, (len(visible_loras) + per_page - 1) // per_page)
         page = min(page, total_pages - 1)
         state["page"] = page
         start = page * per_page
-        page_loras = all_loras[start:start + per_page]
+        page_loras = visible_loras[start:start + per_page]
 
-        lines = [self.strings("lora_presets_title")]
-        if not state["selected"]:
+        lines = [self.strings("ult_trigger_loras_title") if "trigger_chat_id" in state else self.strings("lora_presets_title")]
+        if not any(entry.get("enabled") for entry in state["selected"].values()):
             lines.append(self.strings("lora_presets_empty"))
+        if search_query:
+            lines.append(
+                self.strings("lora_search_label").format(
+                    utils.escape_html(search_query)
+                )
+            )
+        if not visible_loras:
+            empty_key = (
+                "lora_no_favorites"
+                if filter_mode == "favorites" and not search_query
+                else "lora_no_imported"
+                if filter_mode == "imported" and not search_query
+                else "lora_search_empty"
+            )
+            lines.append(self.strings(empty_key))
         lines.append("")
         for lora in page_loras:
             entry = state["selected"].get(lora, {"enabled": False, "weight": 0.75})
             is_on = bool(entry.get("enabled"))
             weight = entry.get("weight", 0.75)
             icon = self.strings("argset_on") if is_on else self.strings("argset_off")
-            lines.append(f"{icon} {utils.escape_html(self._format_lora_name(lora, max_length=None))} ({weight:.1f})")
+            favorite = " ★" if metadata.get(lora, {}).get("favorite") else ""
+            lines.append(f"{icon} {utils.escape_html(self._format_lora_name(lora, max_length=None))} ({weight:.1f}){favorite}")
         lines.append(self.strings("lora_page").format(page + 1, total_pages))
 
         buttons = []
@@ -16992,6 +19164,27 @@ class ComfyImageGenMod(loader.Module):
             )
 
         markup = self._build_button_rows(buttons)
+        markup.extend(
+            self._lora_filter_buttons(
+                state_id,
+                filter_mode,
+                self._argset_lora_filter,
+                imported_loras,
+            )
+        )
+        search_row = [{
+            "text": self.strings("lora_search_btn"),
+            "input": self.strings("lora_search_input"),
+            "handler": self._argset_lora_search_input,
+            "args": (state_id,),
+        }]
+        if search_query:
+            search_row.append({
+                "text": self.strings("lora_search_clear"),
+                "callback": self._argset_lora_search_clear,
+                "args": (state_id,),
+            })
+        markup.append(search_row)
         nav_row = []
         if page > 0:
             nav_row.append({"text": "\u25c0\ufe0f", "callback": self._argset_lora_page, "args": (state_id, -1)})
@@ -17002,7 +19195,7 @@ class ComfyImageGenMod(loader.Module):
         markup.append(
             [
                 {"text": self.strings("lora_presets_clear"), "callback": self._argset_lora_clear, "args": (state_id,)},
-                {"text": self.strings("btn_back"), "callback": self._argset_back},
+                {"text": self.strings("btn_back"), "callback": self._argset_lora_exit, "args": (state_id,)},
                 {"text": self.strings("btn_close"), "callback": self._safe_close_form, "style": "danger"},
             ]
         )
@@ -17015,6 +19208,32 @@ class ComfyImageGenMod(loader.Module):
         state["page"] += direction
         await self._render_argset_lora_list(call, state_id)
 
+    async def _argset_lora_filter(self, call: InlineCall, state_id: str, filter_mode: str):
+        state = self._argset_lora_states.get(state_id)
+        if not state:
+            return
+        state["filter_mode"] = str(filter_mode or "all")
+        state["page"] = 0
+        await self._render_argset_lora_list(call, state_id)
+
+    async def _argset_lora_search_input(self, call: InlineCall, query: str, state_id: str):
+        state = self._argset_lora_states.get(state_id)
+        if not state:
+            return
+        state["search_query"] = " ".join(str(query or "").split())
+        state["page"] = 0
+        await self._render_argset_lora_list(
+            self._source_inline_target(call), state_id
+        )
+
+    async def _argset_lora_search_clear(self, call: InlineCall, state_id: str):
+        state = self._argset_lora_states.get(state_id)
+        if not state:
+            return
+        state["search_query"] = ""
+        state["page"] = 0
+        await self._render_argset_lora_list(call, state_id)
+
     async def _argset_lora_detail(self, call: InlineCall, state_id: str, lora_name: str):
         state = self._argset_lora_states.get(state_id)
         if not state:
@@ -17024,10 +19243,28 @@ class ComfyImageGenMod(loader.Module):
         is_on = bool(entry.get("enabled"))
         weight = entry.get("weight", 0.75)
         status_text = self.strings("lora_on") if is_on else self.strings("lora_off")
+        metadata = self._get_lora_metadata_entry(lora_name)
+        is_favorite = bool(metadata.get("favorite"))
+        note = str(metadata.get("note") or "")
+        triggers = self._normalize_lora_trigger_words(metadata.get("triggers"))
+        auto_triggers = bool(metadata.get("auto_triggers"))
+        civitai_base_model = str(metadata.get("civitai_base_model") or "")
 
         text = self.strings("lora_detail_title").format(
             utils.escape_html(short_name), weight, status_text
         )
+        if note:
+            text += "\n" + self.strings("lora_note_label").format(utils.escape_html(note))
+        if civitai_base_model:
+            text += "\n" + self.strings("lora_civitai_base_model").format(
+                utils.escape_html(civitai_base_model)
+            )
+        if triggers:
+            text += "\n" + self.strings("lora_triggers_label").format(
+                utils.escape_html(", ".join(triggers))
+            )
+        else:
+            text += "\n" + self.strings("lora_triggers_empty")
 
         toggle_text = self._state_toggle_text(is_on)
         toggle_style = self._state_toggle_style(is_on)
@@ -17047,8 +19284,38 @@ class ComfyImageGenMod(loader.Module):
                 }
             ],
             [{"text": toggle_text, "callback": self._argset_lora_toggle, "args": (state_id, lora_name), "style": toggle_style, "emoji_id": toggle_emoji}],
+            [{"text": self.strings("lora_favorite_remove") if is_favorite else self.strings("lora_favorite_add"), "callback": self._argset_lora_favorite, "args": (state_id, lora_name)}],
+            [{
+                "text": self.strings("lora_note_btn"),
+                "input": self.strings("lora_note_input"),
+                "handler": self._argset_lora_note_input,
+                "args": (state_id, lora_name),
+            }],
+            [{
+                "text": self.strings("lora_triggers_btn"),
+                "input": self.strings("lora_triggers_input"),
+                "handler": self._argset_lora_triggers_input,
+                "args": (state_id, lora_name),
+            }],
+            [{
+                "text": (
+                    self.strings("lora_auto_triggers_on")
+                    if auto_triggers
+                    else self.strings("lora_auto_triggers_off")
+                ),
+                "callback": self._argset_lora_auto_triggers,
+                "args": (state_id, lora_name),
+            }],
+            [{
+                "text": self.strings("lora_civitai_btn"),
+                "input": self.strings("lora_civitai_input"),
+                "handler": self._argset_lora_civitai_input,
+                "args": (state_id, lora_name),
+            }],
             self._argset_footer_row(self._argset_lora_back, (state_id,)),
         ]
+        if note:
+            markup.insert(-1, [{"text": self.strings("lora_note_delete"), "callback": self._argset_lora_note_delete, "args": (state_id, lora_name), "style": "danger"}])
 
         await self._render_inline(call, text, markup)
 
@@ -17062,7 +19329,7 @@ class ComfyImageGenMod(loader.Module):
             "enabled": bool(entry.get("enabled")),
             "weight": round(max(0.1, min(2.0, current + delta)), 1),
         }
-        self._save_argset_lora_presets(state["selected"])
+        self._save_lora_menu_selection(state)
         await self._argset_lora_detail(call, state_id, lora_name)
 
     async def _argset_lora_weight_input(self, call: InlineCall, query: str, state_id: str, lora_name: str):
@@ -17088,12 +19355,14 @@ class ComfyImageGenMod(loader.Module):
             "enabled": bool(entry.get("enabled")),
             "weight": weight,
         }
-        self._save_argset_lora_presets(state["selected"])
+        self._save_lora_menu_selection(state)
         try:
             await call.answer(self.strings("lora_weight_saved"))
         except Exception:
             pass
-        await self._argset_lora_detail(call, state_id, lora_name)
+        await self._argset_lora_detail(
+            self._source_inline_target(call), state_id, lora_name
+        )
 
     async def _argset_lora_toggle(self, call: InlineCall, state_id: str, lora_name: str):
         state = self._argset_lora_states.get(state_id)
@@ -17104,9 +19373,86 @@ class ComfyImageGenMod(loader.Module):
             "enabled": not bool(entry.get("enabled")),
             "weight": entry.get("weight", 0.75),
         }
-        self._save_argset_lora_presets(state["selected"])
+        self._save_lora_menu_selection(state)
         try:
             await call.answer(self.strings("lora_presets_saved"))
+        except Exception:
+            pass
+        await self._argset_lora_detail(call, state_id, lora_name)
+
+    async def _argset_lora_favorite(self, call: InlineCall, state_id: str, lora_name: str):
+        state = self._argset_lora_states.get(state_id)
+        if not state:
+            return
+        self._set_lora_metadata_entry(lora_name, favorite=not self._is_lora_favorite(lora_name))
+        await self._argset_lora_detail(call, state_id, lora_name)
+
+    async def _argset_lora_note_input(self, call: InlineCall, query: str, state_id: str, lora_name: str):
+        state = self._argset_lora_states.get(state_id)
+        if not state:
+            return
+        self._set_lora_metadata_entry(lora_name, note=query)
+        try:
+            await call.answer(self.strings("lora_note_saved"))
+        except Exception:
+            pass
+        await self._argset_lora_detail(
+            self._source_inline_target(call), state_id, lora_name
+        )
+
+    async def _argset_lora_triggers_input(self, call: InlineCall, query: str, state_id: str, lora_name: str):
+        if state_id not in self._argset_lora_states:
+            return
+        self._set_lora_metadata_entry(lora_name, triggers=query)
+        try:
+            await call.answer(self.strings("lora_triggers_saved"))
+        except Exception:
+            pass
+        await self._argset_lora_detail(
+            self._source_inline_target(call), state_id, lora_name
+        )
+
+    async def _argset_lora_auto_triggers(self, call: InlineCall, state_id: str, lora_name: str):
+        if state_id not in self._argset_lora_states:
+            return
+        metadata = self._get_lora_metadata_entry(lora_name)
+        self._set_lora_metadata_entry(
+            lora_name,
+            auto_triggers=not bool(metadata.get("auto_triggers")),
+        )
+        await self._argset_lora_detail(call, state_id, lora_name)
+
+    async def _argset_lora_civitai_input(self, call: InlineCall, query: str, state_id: str, lora_name: str):
+        if state_id not in self._argset_lora_states:
+            return
+        version_id, triggers, base_model = await self._fetch_civitai_lora_triggers(query)
+        if not version_id:
+            try:
+                await call.answer(self.strings("lora_civitai_failed"), show_alert=True)
+            except Exception:
+                pass
+            return
+        self._set_lora_metadata_entry(
+            lora_name,
+            triggers=triggers,
+            civitai_version=version_id,
+            civitai_base_model=base_model,
+        )
+        try:
+            await call.answer(self.strings("lora_civitai_saved"))
+        except Exception:
+            pass
+        await self._argset_lora_detail(
+            self._source_inline_target(call), state_id, lora_name
+        )
+
+    async def _argset_lora_note_delete(self, call: InlineCall, state_id: str, lora_name: str):
+        state = self._argset_lora_states.get(state_id)
+        if not state:
+            return
+        self._set_lora_metadata_entry(lora_name, note="")
+        try:
+            await call.answer(self.strings("lora_note_deleted"))
         except Exception:
             pass
         await self._argset_lora_detail(call, state_id, lora_name)
@@ -17116,7 +19462,7 @@ class ComfyImageGenMod(loader.Module):
         if not state:
             return
         state["selected"] = {}
-        self._save_argset_lora_presets({})
+        self._save_lora_menu_selection(state)
         try:
             await call.answer(self.strings("lora_presets_saved"))
         except Exception:
@@ -17125,6 +19471,24 @@ class ComfyImageGenMod(loader.Module):
 
     async def _argset_lora_back(self, call: InlineCall, state_id: str):
         await self._render_argset_lora_list(call, state_id)
+
+    async def _argset_lora_exit(self, call: InlineCall, state_id: str):
+        state = self._argset_lora_states.get(state_id)
+        self._argset_lora_states.pop(state_id, None)
+        if state and "trigger_chat_id" in state:
+            return await self._ult_render_trigger_generation_options(call, state["trigger_chat_id"])
+        await self._argset_render_main(call)
+
+    def _save_lora_menu_selection(self, state):
+        if "trigger_chat_id" not in state:
+            return self._save_argset_lora_presets(state["selected"])
+        settings = self._get_trigger_settings_for_chat(state["trigger_chat_id"])
+        settings["loras"] = {
+            name: entry["weight"]
+            for name, entry in self._normalize_lora_preset_entries(state["selected"]).items()
+            if entry["enabled"]
+        }
+        self._set_trigger_settings_for_chat(state["trigger_chat_id"], settings)
 
     def _save_argset_lora_presets(self, selected_loras):
         saved = self.get("default_args", {})
@@ -17297,8 +19661,12 @@ class ComfyImageGenMod(loader.Module):
             "gemini": "Gemini",
             "groq": "Groq",
             "openrouter": "OpenRouter",
+            "openai": "OpenAI",
             "grok": "Grok",
+            "qwen": "Qwen",
             "deepseek": "DeepSeek",
+            "nvidiaapi": "NVIDIA API",
+            _COMFY_TEXT_PROVIDER: "ComfyUI Text",
         }
         return names.get(provider, provider)
 
@@ -17306,68 +19674,6 @@ class ComfyImageGenMod(loader.Module):
         urls = self._get_enhance_prompt_urls()
         key = "enhance_prompt_source_custom" if provider in urls else "enhance_prompt_source_default"
         return self.strings(key)
-
-    async def _ult_open_enhance_prompts(self, call: InlineCall):
-        await self._ult_render_enhance_prompts(call)
-
-    async def _ult_render_enhance_prompts(self, target):
-        lines = [self.strings("enhance_prompts_title"), ""]
-        buttons = []
-        for provider in self._provider_ids():
-            lines.append(
-                f"{self._format_provider_name(provider)}: {self._enhance_prompt_source_label(provider)}"
-            )
-            buttons.append(
-                {
-                    "text": self._format_provider_name(provider),
-                    "callback": self._ult_enhance_prompt_provider,
-                    "args": (provider,),
-                    "style": "primary",
-                }
-            )
-        markup = self._build_button_rows(buttons, columns=2)
-        markup.append(self._argset_footer_row(self._ult_open_ai_enhance))
-        await self._render_inline(target, "\n".join(lines), markup)
-
-    async def _ult_enhance_prompt_provider(self, call: InlineCall, provider: str):
-        provider = str(provider or "").strip().lower()
-        if provider not in self._provider_ids():
-            return await self._ult_render_enhance_prompts(call)
-        url = self._get_enhance_prompt_url(provider)
-        lines = [
-            f"{self.strings('enhance_prompts_title')}: {self._format_provider_name(provider)}",
-            "",
-            self.strings("enhance_prompt_source").format(self._enhance_prompt_source_label(provider)),
-            self.strings("enhance_prompt_current_url").format(utils.escape_html(self._preview_negative(url, 280))),
-        ]
-        markup = [
-            [
-                {
-                    "text": self.strings("enhance_prompt_btn_set"),
-                    "input": self.strings("enhance_prompt_input_url").format(self._format_provider_name(provider)),
-                    "handler": self._ult_enhance_prompt_url_input,
-                    "args": (provider,),
-                }
-            ],
-            [
-                {
-                    "text": self.strings("enhance_prompt_btn_download"),
-                    "callback": self._ult_enhance_prompt_download,
-                    "args": (provider,),
-                    "style": "primary",
-                }
-            ],
-            [
-                {
-                    "text": self.strings("enhance_prompt_btn_reset"),
-                    "callback": self._ult_enhance_prompt_reset,
-                    "args": (provider,),
-                    "style": "danger",
-                }
-            ],
-            self._argset_footer_row(self._ult_open_enhance_prompts),
-        ]
-        await self._render_inline(call, "\n".join(lines), markup)
 
     async def _ult_enhance_prompt_url_input(self, call: InlineCall, query: str, provider: str):
         if not self._set_enhance_prompt_url(provider, query):
@@ -17380,7 +19686,7 @@ class ComfyImageGenMod(loader.Module):
             await call.answer(self.strings("enhance_prompt_saved"))
         except Exception:
             pass
-        await self._ult_enhance_prompt_provider(call, provider)
+        await self._argset_provider_detail(call, provider)
 
     async def _ult_enhance_prompt_reset(self, call: InlineCall, provider: str):
         self._reset_enhance_prompt_url(provider)
@@ -17388,7 +19694,28 @@ class ComfyImageGenMod(loader.Module):
             await call.answer(self.strings("enhance_prompt_reset"))
         except Exception:
             pass
-        await self._ult_enhance_prompt_provider(call, provider)
+        await self._argset_provider_detail(call, provider)
+
+    async def _ult_comfy_text_workflow_url_input(self, call: InlineCall, query: str):
+        if not self._set_comfy_text_workflow_url(query):
+            try:
+                await call.answer(self.strings("comfy_text_workflow_invalid_url"), show_alert=True)
+            except Exception:
+                pass
+            return
+        try:
+            await call.answer(self.strings("comfy_text_workflow_saved"))
+        except Exception:
+            pass
+        await self._argset_provider_detail(call, _COMFY_TEXT_PROVIDER)
+
+    async def _ult_comfy_text_workflow_reset(self, call: InlineCall):
+        self._reset_comfy_text_workflow_url()
+        try:
+            await call.answer(self.strings("comfy_text_workflow_reset"))
+        except Exception:
+            pass
+        await self._argset_provider_detail(call, _COMFY_TEXT_PROVIDER)
 
     def _inline_call_message(self, call: InlineCall):
         form = getattr(call, "form", {}) or {}
@@ -17417,10 +19744,40 @@ class ComfyImageGenMod(loader.Module):
             await self.client.send_file(chat_id, file_obj, caption=caption)
         return True
 
+    async def _ult_comfy_text_workflow_download(self, call: InlineCall):
+        try:
+            workflow = await self._fetch_comfy_text_workflow(force=True)
+            file_obj = io.BytesIO(
+                json.dumps(workflow, ensure_ascii=False, indent=2).encode("utf-8")
+            )
+            file_obj.name = "comfy_text_workflow.json"
+            sent = await self._send_inline_call_file(
+                call,
+                file_obj,
+                caption=self.strings("comfy_text_workflow_file_caption"),
+            )
+            if not sent:
+                await call.answer(self.strings("comfy_text_workflow_download_failed"), show_alert=True)
+        except Exception as e:
+            logger.debug("Failed to send ComfyUI Text workflow: %s", e)
+            try:
+                detail = self._comfy_text_error_detail(e)
+                await call.answer(
+                    self._plain_text(
+                        self.strings("comfy_text_workflow_download_failed_detail").format(detail)
+                    ),
+                    show_alert=True,
+                )
+            except Exception:
+                pass
+        finally:
+            if "file_obj" in locals():
+                file_obj.close()
+
     async def _ult_enhance_prompt_download(self, call: InlineCall, provider: str):
         provider = str(provider or "").strip().lower()
-        if provider not in self._provider_ids():
-            return await self._ult_render_enhance_prompts(call)
+        if provider not in self._external_provider_ids():
+            return await self._argset_provider_menu(call)
         text = await self._fetch_enhance_prompt(provider, force=True)
         if not text:
             try:
@@ -17450,28 +19807,51 @@ class ComfyImageGenMod(loader.Module):
 
     async def _argset_provider_menu(self, call: InlineCall):
         current = self._get_prompt_provider()
+        current_name = self._format_provider_name(current)
+        if await self._provider_model_has_vision(current):
+            current_name += " (vision)"
         lines = [
             self.strings("provider_title"),
             "",
-            self.strings("provider_current").format(self._format_provider_name(current)),
+            self.strings("provider_menu_intro"),
+            "",
+            self.strings("provider_current").format(current_name),
             "",
         ]
 
         buttons = []
+        provider_lines = []
         for provider in self._provider_ids():
             is_current = provider == current
             icon = self.strings("argset_on") if is_current else self.strings("argset_off")
-            lines.append(f"{icon} {self._format_provider_name(provider)}")
+            provider_name = self._format_provider_name(provider)
+            if await self._provider_model_has_vision(provider):
+                provider_name += " (vision)"
+            provider_line = f"{icon} <b>{provider_name}</b>"
+            if self._provider_has_model_input(provider):
+                provider_line = "{} — <code>{}</code>".format(
+                    provider_line,
+                    utils.escape_html(
+                        self._preview_negative(self._get_provider_model(provider), 42)
+                    ),
+                )
+            elif provider == _COMFY_TEXT_PROVIDER:
+                provider_line = "{} — <code>{}</code>".format(
+                    provider_line,
+                    utils.escape_html(self._preview_negative(_COMFY_TEXT_CLIP_NAME, 42)),
+                )
+            provider_lines.append(provider_line)
             btn_icon = "\u2705 " if is_current else "\u2b1c "
             buttons.append(
                 {
-                    "text": btn_icon + self._format_provider_name(provider),
+                    "text": btn_icon + provider_name,
                     "callback": self._argset_provider_detail,
                     "args": (provider,),
                     "style": "success" if is_current else "primary",
                 }
             )
 
+        lines.append("<blockquote expandable>{}</blockquote>".format("\n".join(provider_lines)))
         markup = self._build_button_rows(buttons)
         markup.append(self._argset_footer_row(self._ult_open_ai_enhance))
         await self._render_inline(call, "\n".join(lines), markup)
@@ -17479,24 +19859,70 @@ class ComfyImageGenMod(loader.Module):
     async def _argset_provider_detail(self, call: InlineCall, provider: str):
         settings = self._get_ai_settings()
         current = settings["provider"]
-        provider_data = settings.get(provider, {})
         selected = provider == current
         status = self.strings("provider_selected") if selected else self.strings("provider_not_selected")
+        is_comfy_text = provider == _COMFY_TEXT_PROVIDER
         api_key_status = (
-            self.strings("provider_api_key_set")
-            if self._get_provider_api_key(provider)
-            else self.strings("provider_api_key_missing")
+            self.strings("provider_api_key_not_required")
+            if is_comfy_text
+            else (
+                self.strings("provider_api_key_set")
+                if self._get_provider_api_key(provider)
+                else self.strings("provider_api_key_missing")
+            )
         )
 
+        provider_name = self._format_provider_name(provider)
+        if await self._provider_model_has_vision(provider):
+            provider_name += " (vision)"
         lines = [
-            f"{self.strings('provider_title')}: {self._format_provider_name(provider)}",
+            f"{self.strings('provider_title')}: {provider_name}",
             "",
             self.strings("provider_status").format(status),
             self.strings("provider_api_key").format(api_key_status),
         ]
 
-        if self._provider_has_model_input(provider):
+        if is_comfy_text:
+            lines.extend(
+                [
+                    self.strings("provider_model").format(_COMFY_TEXT_CLIP_NAME),
+                    self.strings("provider_comfy_text_info"),
+                    self.strings("provider_comfy_text_template"),
+                    "",
+                    "<blockquote>{}\n{}\n{}</blockquote>".format(
+                        self.strings("comfy_text_workflow_section"),
+                        self.strings("comfy_text_workflow_source").format(
+                            self._comfy_text_workflow_source_label()
+                        ),
+                        self.strings("comfy_text_workflow_current_url").format(
+                            utils.escape_html(
+                                self._preview_negative(
+                                    self._get_comfy_text_workflow_url(),
+                                    180,
+                                )
+                            )
+                        ),
+                    ),
+                ]
+            )
+        elif self._provider_has_model_input(provider):
             lines.append(self.strings("provider_model").format(utils.escape_html(self._get_provider_model(provider))))
+        if self._provider_supports_prompt_template(provider):
+            prompt_url = self._get_enhance_prompt_url(provider)
+            lines.extend(
+                [
+                    "",
+                    "<blockquote>{}\n{}\n{}</blockquote>".format(
+                        self.strings("enhance_prompt_section"),
+                        self.strings("enhance_prompt_source").format(
+                            self._enhance_prompt_source_label(provider)
+                        ),
+                        self.strings("enhance_prompt_current_url").format(
+                            utils.escape_html(self._preview_negative(prompt_url, 180))
+                        ),
+                    ),
+                ]
+            )
 
         markup = [
             [
@@ -17507,23 +19933,51 @@ class ComfyImageGenMod(loader.Module):
                     "style": "success",
                 }
             ],
-            [
-                {
-                    "text": self.strings("provider_btn_api_key"),
-                    "input": self.strings("provider_input_api_key").format(self._format_provider_name(provider)),
-                    "handler": self._argset_provider_api_key_input,
-                    "args": (provider,),
-                }
-            ],
         ]
+        if not is_comfy_text:
+            markup.append(
+                [
+                    {
+                        "text": self.strings("provider_btn_api_key"),
+                        "input": self.strings("provider_input_api_key").format(self._format_provider_name(provider)),
+                        "handler": self._argset_provider_api_key_input,
+                        "args": (provider,),
+                    }
+                ]
+            )
+        else:
+            markup.extend(
+                [
+                    [
+                        {
+                            "text": self.strings("comfy_text_workflow_btn_set"),
+                            "input": self.strings("comfy_text_workflow_input_url"),
+                            "handler": self._ult_comfy_text_workflow_url_input,
+                        }
+                    ],
+                    [
+                        {
+                            "text": self.strings("comfy_text_workflow_btn_download"),
+                            "callback": self._ult_comfy_text_workflow_download,
+                            "style": "primary",
+                        },
+                        {
+                            "text": self.strings("comfy_text_workflow_btn_reset"),
+                            "callback": self._ult_comfy_text_workflow_reset,
+                            "style": "danger",
+                        },
+                    ],
+                ]
+            )
 
         presets = self._provider_model_presets(provider)
         if presets:
             preset_buttons = []
             for model in presets:
-                label = model
-                if len(label) > 30:
-                    label = label[:27] + "..."
+                vision_suffix = " (vision)" if await self._provider_model_has_vision(provider, model) else ""
+                max_model_length = 30 - len(vision_suffix)
+                label = model if len(model) <= max_model_length else model[:max_model_length - 3] + "..."
+                label += vision_suffix
                 preset_buttons.append(
                     {
                         "text": label,
@@ -17542,6 +19996,35 @@ class ComfyImageGenMod(loader.Module):
                     "args": (provider,),
                 }
             ])
+        if self._provider_supports_prompt_template(provider):
+            markup.extend(
+                [
+                    [
+                        {
+                            "text": self.strings("enhance_prompt_btn_set"),
+                            "input": self.strings("enhance_prompt_input_url").format(
+                                self._format_provider_name(provider)
+                            ),
+                            "handler": self._ult_enhance_prompt_url_input,
+                            "args": (provider,),
+                        }
+                    ],
+                    [
+                        {
+                            "text": self.strings("enhance_prompt_btn_download"),
+                            "callback": self._ult_enhance_prompt_download,
+                            "args": (provider,),
+                            "style": "primary",
+                        },
+                        {
+                            "text": self.strings("enhance_prompt_btn_reset"),
+                            "callback": self._ult_enhance_prompt_reset,
+                            "args": (provider,),
+                            "style": "danger",
+                        },
+                    ],
+                ]
+            )
 
         markup.append(self._argset_footer_row(self._argset_provider_menu))
         await self._render_inline(call, "\n".join(lines), markup)
@@ -17602,11 +20085,15 @@ class ComfyImageGenMod(loader.Module):
     async def _argset_pin_model(self, call: InlineCall):
         if self._workflow_limited_mode():
             return await self._argset_render_main(call)
+        await self._ensure_workflow_data(
+            self.get("default_workflow", _DEFAULT_WORKFLOW_NAME)
+        )
+        self._sync_argset_for_current_model()
         self._save_argset_profile_for_current_model()
         try:
             await call.answer(
                 self.strings("argset_pin_model_ok").format(
-                    self._format_model_name(self.config["model_name"])
+                    self._format_model_name(self._argset_profile_model_name())
                 ),
                 show_alert=True,
             )
@@ -17650,9 +20137,11 @@ class ComfyImageGenMod(loader.Module):
         defaults["lora"] = self._get_global_lora_data()
         self.set("default_args", defaults)
         profile_key = self._argset_profile_key(wf_name)
+        legacy_profile_key = self._legacy_argset_profile_key(wf_name)
         profiles = self.get("model_arg_profiles", {})
-        if isinstance(profiles, dict) and profile_key in profiles:
+        if isinstance(profiles, dict):
             profiles.pop(profile_key, None)
+            profiles.pop(legacy_profile_key, None)
             self.set("model_arg_profiles", profiles)
         self.set("argset_active_model_key", profile_key)
 
@@ -17687,6 +20176,9 @@ class ComfyImageGenMod(loader.Module):
             "chat_ai": False,
             "disable_auto_ai": False,
             "inspire": False,
+            "translate_prompt": False,
+            "auto_delete_delay": None,
+            "disable_auto_delete": False,
         }
 
         if self._ai_enhance_enabled():
@@ -17770,10 +20262,21 @@ class ComfyImageGenMod(loader.Module):
             parsed["enhance_prompt"] = True
             args_raw = re.sub(r'-ai\b', '', args_raw, flags=re.IGNORECASE).strip()
 
+        if re.search(r'-t\b', args_raw, re.IGNORECASE):
+            parsed["translate_prompt"] = True
+            args_raw = re.sub(r'-t\b', '', args_raw, flags=re.IGNORECASE).strip()
+
         if re.search(r'-i\b', args_raw, re.IGNORECASE):
             parsed["inspire"] = True
             parsed["enhance_prompt"] = False
             args_raw = re.sub(r'-i\b', '', args_raw, count=1, flags=re.IGNORECASE).strip()
+
+        raw_delete_delay = extract_arg(r'-(?:del|autodel)\s+(\d+)\b', type_cast=int)
+        if raw_delete_delay is not None:
+            parsed["auto_delete_delay"] = max(5, min(86400, raw_delete_delay))
+        if re.search(r'-(?:nodel|noautodel)\b', args_raw, re.IGNORECASE):
+            parsed["disable_auto_delete"] = True
+            args_raw = re.sub(r'-(?:nodel|noautodel)\b', '', args_raw, flags=re.IGNORECASE).strip()
 
         neg_match = re.search(
             r'-neg\s+(?:"([^"]*)"|' + r"'([^']*)'|(.+?)(?=\s+-\w|$))",
@@ -17793,7 +20296,7 @@ class ComfyImageGenMod(loader.Module):
     async def _render_lora_list(self, call_or_message, state_id):
         state = self._lora_states[state_id]
         try:
-            all_loras = await self._get_available_loras()
+            all_loras, imported_loras = await self._ensure_lora_state_catalog(state)
         except Exception as e:
             logger.debug("Failed to load LoRA list: %s", e)
             state = self._lora_states.pop(state_id, None)
@@ -17808,24 +20311,51 @@ class ComfyImageGenMod(loader.Module):
             return await self._safe_answer(call_or_message, self.strings("lora_none_available"))
 
         state["selected"] = self._normalize_lora_preset_entries(state.get("selected"), all_loras)
+        filter_mode = self._lora_filter_mode(state)
+        state["filter_mode"] = filter_mode
+        metadata = self._get_lora_metadata()
+        visible_loras = self._filter_loras(
+            all_loras,
+            filter_mode,
+            metadata,
+            imported_loras,
+        )
+        search_query = " ".join(str(state.get("search_query") or "").split())
+        visible_loras = self._filter_names_by_query(visible_loras, search_query)
 
-        page = state["page"]
+        page = int(state.get("page") or 0)
         per_page = 6
-        total_pages = max(1, (len(all_loras) + per_page - 1) // per_page)
+        total_pages = max(1, (len(visible_loras) + per_page - 1) // per_page)
         page = min(page, total_pages - 1)
         state["page"] = page
         start = page * per_page
-        page_loras = all_loras[start:start + per_page]
+        page_loras = visible_loras[start:start + per_page]
 
         lines = [self.strings("lora_title")]
         lines.append(f"{self.strings('lora_prompt_label')}: {utils.escape_html(str(state.get('positive') or self.strings('prompt_empty'))[:100])}")
+        if search_query:
+            lines.append(
+                self.strings("lora_search_label").format(
+                    utils.escape_html(search_query)
+                )
+            )
         lines.append("")
+        if not visible_loras:
+            empty_key = (
+                "lora_no_favorites"
+                if filter_mode == "favorites" and not search_query
+                else "lora_no_imported"
+                if filter_mode == "imported" and not search_query
+                else "lora_search_empty"
+            )
+            lines.append(self.strings(empty_key))
         for lora in page_loras:
             entry = state["selected"].get(lora, {"enabled": False, "weight": 0.75})
             is_on = bool(entry.get("enabled"))
             weight = entry.get("weight", 0.75)
             icon = '<tg-emoji emoji-id="5206607081334906820">\u2705</tg-emoji>' if is_on else '<tg-emoji emoji-id="5985346521103604145">\u2b1c</tg-emoji>'
-            lines.append(f"{icon} {utils.escape_html(self._format_lora_name(lora, max_length=None))} ({weight:.1f})")
+            favorite = " ★" if metadata.get(lora, {}).get("favorite") else ""
+            lines.append(f"{icon} {utils.escape_html(self._format_lora_name(lora, max_length=None))} ({weight:.1f}){favorite}")
 
         lines.append(self.strings("lora_page").format(page + 1, total_pages))
         text = "\n".join(lines)
@@ -17848,6 +20378,28 @@ class ComfyImageGenMod(loader.Module):
         if row:
             markup.append(row)
 
+        markup.extend(
+            self._lora_filter_buttons(
+                state_id,
+                filter_mode,
+                self._lora_filter,
+                imported_loras,
+            )
+        )
+        search_row = [{
+            "text": self.strings("lora_search_btn"),
+            "input": self.strings("lora_search_input"),
+            "handler": self._lora_search_input,
+            "args": (state_id,),
+        }]
+        if search_query:
+            search_row.append({
+                "text": self.strings("lora_search_clear"),
+                "callback": self._lora_search_clear,
+                "args": (state_id,),
+            })
+        markup.append(search_row)
+
         nav_row = []
         if page > 0:
             nav_row.append({"text": "\u25c0\ufe0f", "callback": self._lora_page, "args": (state_id, -1)})
@@ -17865,13 +20417,37 @@ class ComfyImageGenMod(loader.Module):
 
     async def _lora_page(self, call: InlineCall, state_id: str, direction: int):
         if state_id not in self._lora_states:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         self._lora_states[state_id]["page"] += direction
+        await self._render_lora_list(call, state_id)
+
+    async def _lora_filter(self, call: InlineCall, state_id: str, filter_mode: str):
+        state = self._lora_states.get(state_id)
+        if not state:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
+        state["filter_mode"] = str(filter_mode or "all")
+        state["page"] = 0
+        await self._render_lora_list(call, state_id)
+
+    async def _lora_search_input(self, call: InlineCall, query: str, state_id: str):
+        state = self._lora_states.get(state_id)
+        if not state:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
+        state["search_query"] = " ".join(str(query or "").split())
+        state["page"] = 0
+        await self._render_lora_list(self._source_inline_target(call), state_id)
+
+    async def _lora_search_clear(self, call: InlineCall, state_id: str):
+        state = self._lora_states.get(state_id)
+        if not state:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
+        state["search_query"] = ""
+        state["page"] = 0
         await self._render_lora_list(call, state_id)
 
     async def _lora_detail(self, call: InlineCall, state_id: str, lora_name: str):
         if state_id not in self._lora_states:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         state = self._lora_states[state_id]
         short_name = self._format_lora_name(lora_name, max_length=30)
 
@@ -17879,10 +20455,28 @@ class ComfyImageGenMod(loader.Module):
         is_on = bool(entry.get("enabled"))
         weight = entry.get("weight", 0.75)
         status_text = self.strings("lora_on") if is_on else self.strings("lora_off")
+        metadata = self._get_lora_metadata_entry(lora_name)
+        is_favorite = bool(metadata.get("favorite"))
+        note = str(metadata.get("note") or "")
+        triggers = self._normalize_lora_trigger_words(metadata.get("triggers"))
+        auto_triggers = bool(metadata.get("auto_triggers"))
+        civitai_base_model = str(metadata.get("civitai_base_model") or "")
 
         text = self.strings("lora_detail_title").format(
             utils.escape_html(short_name), weight, status_text
         )
+        if note:
+            text += "\n" + self.strings("lora_note_label").format(utils.escape_html(note))
+        if civitai_base_model:
+            text += "\n" + self.strings("lora_civitai_base_model").format(
+                utils.escape_html(civitai_base_model)
+            )
+        if triggers:
+            text += "\n" + self.strings("lora_triggers_label").format(
+                utils.escape_html(", ".join(triggers))
+            )
+        else:
+            text += "\n" + self.strings("lora_triggers_empty")
 
         toggle_text = self._state_toggle_text(is_on)
         toggle_style = self._state_toggle_style(is_on)
@@ -17902,14 +20496,44 @@ class ComfyImageGenMod(loader.Module):
                 }
             ],
             [{"text": toggle_text, "callback": self._lora_toggle, "args": (state_id, lora_name), "style": toggle_style, "emoji_id": toggle_emoji}],
+            [{"text": self.strings("lora_favorite_remove") if is_favorite else self.strings("lora_favorite_add"), "callback": self._lora_favorite, "args": (state_id, lora_name)}],
+            [{
+                "text": self.strings("lora_note_btn"),
+                "input": self.strings("lora_note_input"),
+                "handler": self._lora_note_input,
+                "args": (state_id, lora_name),
+            }],
+            [{
+                "text": self.strings("lora_triggers_btn"),
+                "input": self.strings("lora_triggers_input"),
+                "handler": self._lora_triggers_input,
+                "args": (state_id, lora_name),
+            }],
+            [{
+                "text": (
+                    self.strings("lora_auto_triggers_on")
+                    if auto_triggers
+                    else self.strings("lora_auto_triggers_off")
+                ),
+                "callback": self._lora_auto_triggers,
+                "args": (state_id, lora_name),
+            }],
+            [{
+                "text": self.strings("lora_civitai_btn"),
+                "input": self.strings("lora_civitai_input"),
+                "handler": self._lora_civitai_input,
+                "args": (state_id, lora_name),
+            }],
             [{"text": self.strings("btn_back"), "callback": self._lora_back, "args": (state_id,)}],
         ]
+        if note:
+            markup.insert(-1, [{"text": self.strings("lora_note_delete"), "callback": self._lora_note_delete, "args": (state_id, lora_name), "style": "danger"}])
 
         await self._render_inline(call, text, markup)
 
     async def _lora_weight(self, call: InlineCall, state_id: str, lora_name: str, delta: float):
         if state_id not in self._lora_states:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         state = self._lora_states[state_id]
         entry = state["selected"].get(lora_name, {"enabled": False, "weight": 0.75})
         current = entry.get("weight", 0.75)
@@ -17922,7 +20546,7 @@ class ComfyImageGenMod(loader.Module):
 
     async def _lora_weight_input(self, call: InlineCall, query: str, state_id: str, lora_name: str):
         if state_id not in self._lora_states:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         try:
             weight = round(float(query.strip().replace(",", ".")), 1)
         except (TypeError, ValueError):
@@ -17947,11 +20571,11 @@ class ComfyImageGenMod(loader.Module):
             await call.answer(self.strings("lora_weight_saved"))
         except Exception:
             pass
-        await self._lora_detail(call, state_id, lora_name)
+        await self._lora_detail(self._source_inline_target(call), state_id, lora_name)
 
     async def _lora_toggle(self, call: InlineCall, state_id: str, lora_name: str):
         if state_id not in self._lora_states:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         state = self._lora_states[state_id]
         entry = state["selected"].get(lora_name, {"enabled": False, "weight": 0.75})
         state["selected"][lora_name] = {
@@ -17960,18 +20584,90 @@ class ComfyImageGenMod(loader.Module):
         }
         await self._lora_detail(call, state_id, lora_name)
 
+    async def _lora_favorite(self, call: InlineCall, state_id: str, lora_name: str):
+        if state_id not in self._lora_states:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
+        self._set_lora_metadata_entry(lora_name, favorite=not self._is_lora_favorite(lora_name))
+        await self._lora_detail(call, state_id, lora_name)
+
+    async def _lora_note_input(self, call: InlineCall, query: str, state_id: str, lora_name: str):
+        if state_id not in self._lora_states:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
+        self._set_lora_metadata_entry(lora_name, note=query)
+        try:
+            await call.answer(self.strings("lora_note_saved"))
+        except Exception:
+            pass
+        await self._lora_detail(self._source_inline_target(call), state_id, lora_name)
+
+    async def _lora_triggers_input(self, call: InlineCall, query: str, state_id: str, lora_name: str):
+        if state_id not in self._lora_states:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
+        self._set_lora_metadata_entry(lora_name, triggers=query)
+        try:
+            await call.answer(self.strings("lora_triggers_saved"))
+        except Exception:
+            pass
+        await self._lora_detail(self._source_inline_target(call), state_id, lora_name)
+
+    async def _lora_auto_triggers(self, call: InlineCall, state_id: str, lora_name: str):
+        if state_id not in self._lora_states:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
+        metadata = self._get_lora_metadata_entry(lora_name)
+        self._set_lora_metadata_entry(
+            lora_name,
+            auto_triggers=not bool(metadata.get("auto_triggers")),
+        )
+        await self._lora_detail(call, state_id, lora_name)
+
+    async def _lora_civitai_input(self, call: InlineCall, query: str, state_id: str, lora_name: str):
+        if state_id not in self._lora_states:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
+        version_id, triggers, base_model = await self._fetch_civitai_lora_triggers(query)
+        if not version_id:
+            try:
+                await call.answer(self.strings("lora_civitai_failed"), show_alert=True)
+            except Exception:
+                pass
+            return
+        self._set_lora_metadata_entry(
+            lora_name,
+            triggers=triggers,
+            civitai_version=version_id,
+            civitai_base_model=base_model,
+        )
+        try:
+            await call.answer(self.strings("lora_civitai_saved"))
+        except Exception:
+            pass
+        await self._lora_detail(self._source_inline_target(call), state_id, lora_name)
+
+    async def _lora_note_delete(self, call: InlineCall, state_id: str, lora_name: str):
+        if state_id not in self._lora_states:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
+        self._set_lora_metadata_entry(lora_name, note="")
+        try:
+            await call.answer(self.strings("lora_note_deleted"))
+        except Exception:
+            pass
+        await self._lora_detail(call, state_id, lora_name)
+
     async def _lora_back(self, call: InlineCall, state_id: str):
         if state_id not in self._lora_states:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         await self._render_lora_list(call, state_id)
 
     async def _lora_generate(self, call: InlineCall, state_id: str):
         if state_id not in self._lora_states:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         state = self._lora_states.pop(state_id)
         selected_entries = self._normalize_lora_preset_entries(state.pop("selected", {}))
         selected_loras = self._get_enabled_lora_presets(selected_entries)
         state.pop("page", None)
+        state.pop("all_loras", None)
+        state.pop("imported_loras", None)
+        state.pop("favorites_only", None)
+        state.pop("filter_mode", None)
         state["selected_loras"] = dict(selected_loras)
         await self._run_direct_generation(call, state, selected_loras=selected_loras)
 
@@ -17984,10 +20680,101 @@ class ComfyImageGenMod(loader.Module):
         except Exception:
             pass
 
-    def _inject_loras(self, workflow: dict, wf_data: dict, selected_loras: dict) -> dict:
+    def _inject_loras(self, workflow: dict, wf_data: dict, selected_loras: dict):
+        selected_loras = self._normalize_selected_loras(selected_loras)
+        if not selected_loras:
+            return workflow, {"supported": True, "capacity": 0}
+
+        def replace_model_links(source, replacement, skipped_node_ids=()):
+            source_id, source_output = str(source[0]), source[1]
+            skipped_node_ids = {str(node_id) for node_id in skipped_node_ids}
+            for target_id, target_node in workflow.items():
+                if str(target_id) in skipped_node_ids or not isinstance(target_node, dict):
+                    continue
+                target_inputs = target_node.get("inputs")
+                if not isinstance(target_inputs, dict):
+                    continue
+                for input_name, value in tuple(target_inputs.items()):
+                    if (
+                        self._is_workflow_link(value)
+                        and str(value[0]) == source_id
+                        and value[1] == source_output
+                    ):
+                        target_inputs[input_name] = list(replacement)
+
+        def append_model_only_loras(source, lora_items):
+            previous = list(source)
+            created_node_ids = []
+            for lora_name, weight in lora_items:
+                node_id = self._next_node_id(workflow)
+                workflow[node_id] = {
+                    "class_type": "LoraLoaderModelOnly",
+                    "inputs": {
+                        "model": previous,
+                        "lora_name": lora_name,
+                        "strength_model": weight,
+                    },
+                    "_meta": {"title": "Load LoRA"},
+                }
+                created_node_ids.append(node_id)
+                previous = [node_id, 0]
+            return previous, created_node_ids
+
+        def has_model_links(source):
+            source_id, source_output = str(source[0]), source[1]
+            return any(
+                self._is_workflow_link(value)
+                and str(value[0]) == source_id
+                and value[1] == source_output
+                for node in workflow.values()
+                if isinstance(node, dict)
+                for value in (node.get("inputs") or {}).values()
+            )
+
+        def find_model_source():
+            mapping = wf_data.get("mapping") if isinstance(wf_data, dict) else None
+            if not isinstance(mapping, dict):
+                mapping = self._parse_workflow(workflow)
+            model_mapping = mapping.get("model") if isinstance(mapping, dict) else None
+            candidates = []
+            if isinstance(model_mapping, dict) and model_mapping.get("node_id") is not None:
+                candidates.append(str(model_mapping["node_id"]))
+            candidates.extend(
+                str(node_id)
+                for node_id, node in workflow.items()
+                if isinstance(node, dict)
+                and (
+                    node.get("class_type")
+                    in {
+                        "CheckpointLoaderSimple",
+                        "UNETLoader",
+                        "UnetLoaderGGUF",
+                        "LoadDiffusionModel",
+                        "DiffusionModelLoader",
+                        "LoadGGUF",
+                        "GGUFLoader",
+                    }
+                    or (
+                        "unet_name" in (node.get("inputs") or {})
+                        and "gguf" in str(node.get("class_type") or "").lower()
+                    )
+                    or self._is_model_loader_like_node(
+                        node.get("class_type", ""), node.get("inputs") or {}
+                    )
+                )
+            )
+            for node_id in dict.fromkeys(candidates):
+                source_node = workflow.get(node_id)
+                if not isinstance(source_node, dict):
+                    continue
+                source = [node_id, 0]
+                if has_model_links(source):
+                    return source
+            return None
+
         power_lora_node_id = None
         for nid, node in workflow.items():
-            if node.get("class_type") == "Power Lora Loader (rgthree)":
+            if isinstance(node, dict) and node.get("class_type") == "Power Lora Loader (rgthree)":
                 power_lora_node_id = nid
                 break
 
@@ -18025,37 +20812,122 @@ class ComfyImageGenMod(loader.Module):
                     }
                     next_lora_index += 1
 
-            return workflow
+            return workflow, {"supported": True, "capacity": None}
 
         cr_lora_stack_node_id = None
         for nid, node in workflow.items():
-            if node.get("class_type") == "CR LoRA Stack":
+            if isinstance(node, dict) and node.get("class_type") == "CR LoRA Stack":
                 cr_lora_stack_node_id = nid
                 break
 
-        if not cr_lora_stack_node_id:
-            return workflow
+        if cr_lora_stack_node_id:
+            node_inputs = workflow[cr_lora_stack_node_id]["inputs"]
+            lora_indexes = []
+            for key in node_inputs:
+                match = re.fullmatch(r"lora_name_(\d+)", key)
+                if match:
+                    lora_indexes.append(int(match.group(1)))
+            lora_indexes = sorted(lora_indexes)
+            if len(selected_loras) > len(lora_indexes):
+                return workflow, {
+                    "supported": True,
+                    "capacity": len(lora_indexes),
+                }
 
-        node_inputs = workflow[cr_lora_stack_node_id]["inputs"]
-        lora_indexes = []
-        for key in node_inputs:
-            match = re.fullmatch(r"lora_name_(\d+)", key)
-            if match:
-                lora_indexes.append(int(match.group(1)))
-        lora_indexes = sorted(lora_indexes)
+            node_inputs = workflow[cr_lora_stack_node_id]["inputs"]
+            for index in lora_indexes:
+                if f"switch_{index}" in node_inputs:
+                    node_inputs[f"switch_{index}"] = "Off"
 
-        for index in lora_indexes:
-            if f"switch_{index}" in node_inputs:
-                node_inputs[f"switch_{index}"] = "Off"
+            for index, item in zip(lora_indexes, selected_loras.items()):
+                lora_name, weight = item
+                node_inputs[f"switch_{index}"] = "On"
+                node_inputs[f"lora_name_{index}"] = lora_name
+                node_inputs[f"model_weight_{index}"] = weight
 
-        for index, item in zip(lora_indexes, selected_loras.items()):
-            lora_name, weight = item
-            node_inputs[f"switch_{index}"] = "On"
-            node_inputs[f"lora_name_{index}"] = lora_name
-            node_inputs[f"model_weight_{index}"] = weight
-            node_inputs[f"clip_weight_{index}"] = weight
+            return workflow, {"supported": True, "capacity": len(lora_indexes)}
 
-        return workflow
+        standard_lora_nodes = [
+            (str(node_id), node)
+            for node_id, node in workflow.items()
+            if isinstance(node, dict)
+            and node.get("class_type") in {"LoraLoader", "LoraLoaderModelOnly"}
+        ]
+
+        def ordered_lora_chain(nodes):
+            if len(nodes) < 2:
+                return nodes
+            by_id = {node_id: node for node_id, node in nodes}
+            children = {node_id: [] for node_id in by_id}
+            predecessors = {}
+            for node_id, node in nodes:
+                source = (node.get("inputs") or {}).get("model")
+                if not self._is_workflow_link(source):
+                    continue
+                source_id = str(source[0])
+                if source_id not in by_id:
+                    continue
+                children[source_id].append(node_id)
+                predecessors[node_id] = source_id
+            roots = [node_id for node_id, _ in nodes if node_id not in predecessors]
+            if len(roots) != 1 or any(len(value) > 1 for value in children.values()):
+                return nodes
+            ordered = []
+            node_id = roots[0]
+            while node_id:
+                ordered.append((node_id, by_id[node_id]))
+                next_nodes = children[node_id]
+                if len(next_nodes) > 1:
+                    return nodes
+                node_id = next_nodes[0] if next_nodes else None
+            return ordered if len(ordered) == len(nodes) else nodes
+
+        standard_lora_nodes = ordered_lora_chain(standard_lora_nodes)
+        if not standard_lora_nodes:
+            source = find_model_source()
+            if not source:
+                return workflow, {"supported": False, "capacity": 0}
+            replacement, created_node_ids = append_model_only_loras(
+                source,
+                selected_loras.items(),
+            )
+            replace_model_links(source, replacement, created_node_ids)
+            return workflow, {"supported": True, "capacity": None}
+
+        for (_, node), (lora_name, weight) in zip(
+            standard_lora_nodes,
+            selected_loras.items(),
+        ):
+            node_inputs = node.setdefault("inputs", {})
+            node_inputs["lora_name"] = lora_name
+            node_inputs["strength_model"] = weight
+
+        for node_id, node in reversed(standard_lora_nodes[len(selected_loras):]):
+            node_inputs = node.get("inputs") or {}
+            output_sources = {0: node_inputs.get("model")}
+            if node.get("class_type") == "LoraLoader":
+                output_sources[1] = node_inputs.get("clip")
+            for target_node in workflow.values():
+                target_inputs = target_node.get("inputs") if isinstance(target_node, dict) else None
+                if not isinstance(target_inputs, dict):
+                    continue
+                for input_name, value in tuple(target_inputs.items()):
+                    if not self._is_workflow_link(value) or str(value[0]) != node_id:
+                        continue
+                    source = output_sources.get(value[1])
+                    if self._is_workflow_link(source):
+                        target_inputs[input_name] = list(source)
+
+        extra_loras = list(selected_loras.items())[len(standard_lora_nodes):]
+        if extra_loras:
+            source = [standard_lora_nodes[-1][0], 0]
+            replacement, created_node_ids = append_model_only_loras(source, extra_loras)
+            replace_model_links(source, replacement, created_node_ids)
+
+        return workflow, {
+            "supported": True,
+            "capacity": None,
+        }
 
     def _extract_trigger_prompt(self, text, trigger):
         raw = (text or "").strip()
@@ -18119,18 +20991,6 @@ class ComfyImageGenMod(loader.Module):
         )
 
     async def _send_message_as_self_if_possible(self, chat_id, text, **kwargs):
-        if InputPeerSelf:
-            try:
-                return await self.client.send_message(
-                    chat_id,
-                    text,
-                    send_as=InputPeerSelf(),
-                    **kwargs,
-                )
-            except Exception as e:
-                if not self._send_as_fallback_allowed(e):
-                    raise
-                logger.debug("send_as self is unavailable, retrying message normally: %s", e)
         return await self.client.send_message(chat_id, text, **kwargs)
 
     @staticmethod
@@ -18144,19 +21004,6 @@ class ComfyImageGenMod(loader.Module):
                     pass
 
     async def _send_file_as_self_if_possible(self, chat_id, file_obj, **kwargs):
-        if InputPeerSelf:
-            try:
-                return await self.client.send_file(
-                    self._send_peer_candidate(chat_id),
-                    file_obj,
-                    send_as=InputPeerSelf(),
-                    **kwargs,
-                )
-            except Exception as e:
-                if not self._send_as_fallback_allowed(e):
-                    raise
-                logger.debug("send_as self is unavailable, retrying file normally: %s", e)
-                self._rewind_send_file_obj(file_obj)
         self._rewind_send_file_obj(file_obj)
         return await self.client.send_file(self._send_peer_candidate(chat_id), file_obj, **kwargs)
 
@@ -18315,7 +21162,7 @@ class ComfyImageGenMod(loader.Module):
         )
 
     async def _reply_media_kind_for_message(self, message, reply, context="generation"):
-        if await self._reply_media_is_source_post(message, reply):
+        if context == "trigger" and await self._reply_media_is_source_post(message, reply):
             logger.debug(
                 "Ignoring %s reply media from source post: message_id=%s reply_id=%s",
                 context,
@@ -18324,6 +21171,107 @@ class ComfyImageGenMod(loader.Module):
             )
             return None
         return self._reply_media_kind(reply)
+
+    async def _generation_input_media(self, message, reply=None):
+        reply = reply if reply is not None else await message.get_reply_message()
+        reply_kind = await self._reply_media_kind_for_message(
+            message,
+            reply,
+            context="generation",
+        )
+        if reply_kind:
+            return reply, reply_kind
+        attached_kind = self._reply_media_kind(message)
+        if attached_kind:
+            return message, attached_kind
+        return reply, None
+
+    async def _album_images_from_reply(self, message, reply):
+        grouped_id = getattr(reply, "grouped_id", None)
+        reply_id = getattr(reply, "id", None)
+        if not grouped_id or not reply_id:
+            return []
+        try:
+            reply_id = int(reply_id)
+            chat_id = utils.get_chat_id(message)
+            messages = await self.client.get_messages(
+                chat_id,
+                ids=list(range(max(1, reply_id - 12), reply_id + 13)),
+            )
+        except Exception as error:
+            logger.debug("Could not load album messages: %s", error)
+            return []
+        if isinstance(messages, Message):
+            messages = [messages]
+        candidates = {int(reply_id): reply}
+        for item in messages or []:
+            item_id = getattr(item, "id", None)
+            if item_id is not None:
+                candidates[int(item_id)] = item
+        images = [
+            item
+            for item in candidates.values()
+            if str(getattr(item, "grouped_id", "")) == str(grouped_id)
+            and self._reply_media_kind(item) == "image"
+        ]
+        return sorted(images, key=lambda item: int(getattr(item, "id", 0) or 0))
+
+    async def _open_album_picker(self, message):
+        reply = await message.get_reply_message()
+        images = await self._album_images_from_reply(message, reply)
+        if len(images) < 2:
+            return False
+        state_id = str(uuid.uuid4())
+        self._album_picker_states[state_id] = {
+            "message": message,
+            "chat_id": utils.get_chat_id(message),
+            "image_ids": [int(item.id) for item in images],
+        }
+        buttons = []
+        row = []
+        for index in range(len(images)):
+            row.append({
+                "text": self.strings("album_picker_button").format(index + 1),
+                "callback": self._album_picker_select,
+                "args": (state_id, index),
+            })
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        buttons.append([{"text": self.strings("btn_cancel"), "action": "close", "style": "danger"}])
+        text = "\n\n".join([
+            self.strings("album_picker_title"),
+            self.strings("album_picker_desc").format(len(images)),
+        ])
+        rendered = await self._render_inline(message, text, buttons)
+        if not rendered:
+            self._album_picker_states.pop(state_id, None)
+            return False
+        return True
+
+    async def _album_picker_select(self, call: InlineCall, state_id, index):
+        state = self._album_picker_states.pop(state_id, None)
+        if not state:
+            return await self._safe_call_answer(
+                call,
+                self.strings("album_picker_expired"),
+                show_alert=True,
+            )
+        try:
+            image_id = state["image_ids"][int(index)]
+            image = await self.client.get_messages(state["chat_id"], ids=image_id)
+        except Exception as error:
+            logger.debug("Could not get selected album image: %s", error)
+            return await self._render_inline(call, self.strings("album_picker_unavailable"))
+        if self._reply_media_kind(image) != "image":
+            return await self._render_inline(call, self.strings("album_picker_unavailable"))
+        await self.comfy(
+            state["message"],
+            _input_media=image,
+            _resume_target=call,
+        )
 
     async def _trigger_reply_media_is_source_post(self, message, reply):
         return await self._reply_media_is_source_post(message, reply)
@@ -18348,6 +21296,43 @@ class ComfyImageGenMod(loader.Module):
 
     def _contains_cyrillic(self, text):
         return bool(re.search(r"[\u0400-\u04FF]", str(text or "")))
+
+    async def _translate_prompt_to_english(self, prompt):
+        prompt = str(prompt or "").strip()
+        if not prompt or not self._contains_cyrillic(prompt):
+            return prompt, None
+        cached = self._translation_cache.get(prompt)
+        if cached:
+            return cached, None
+        try:
+            async with self._session_get(
+                _TRANSLATE_URL,
+                params={
+                    "client": "gtx",
+                    "sl": "auto",
+                    "tl": "en",
+                    "dt": "t",
+                    "q": prompt[:4500],
+                },
+                timeout=aiohttp.ClientTimeout(total=_COMFY_TIMEOUTS["translation"]),
+            ) as response:
+                if response.status != 200:
+                    logger.warning("Prompt translation failed with HTTP %s", response.status)
+                    return None, f"HTTP {response.status}"
+                payload = await response.json(content_type=None)
+            parts = payload[0] if isinstance(payload, list) and payload else []
+            translated = "".join(
+                str(item[0])
+                for item in parts
+                if isinstance(item, list) and item and isinstance(item[0], str)
+            ).strip()
+            if not translated:
+                return None, "empty response"
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
+            logger.warning("Prompt translation failed: %s", error)
+            return None, type(error).__name__
+        self._translation_cache[prompt] = translated
+        return translated, None
 
     def _apply_trigger_steps_limit(self, parsed_steps, max_steps, wf_name):
         max_steps = self._coerce_int(max_steps, 40, 1, 100)
@@ -18387,13 +21372,18 @@ class ComfyImageGenMod(loader.Module):
 
         limited_mode = self._workflow_limited_mode()
         repeat_requested = bool(raw_args and re.search(r'-r\b|-repeat\b', raw_args, re.IGNORECASE))
+        repeat_delete_flags = ""
+        if repeat_requested:
+            repeat_delete_flags = " ".join(
+                match.group(0)
+                for match in re.finditer(r'-(?:nodel|noautodel)\b|-(?:del|autodel)\s+\d+\b', raw_args, re.IGNORECASE)
+            )
         repeat_selected_loras = {}
         if repeat_requested:
             last = self.get("last_generation")
             if not last:
                 await self._send_trigger_reply(message, self.strings("repeat_no_last"))
                 return
-            # Model, workflow, and seed are intentionally not reused during repeat generation.
             if not limited_mode:
                 repeat_selected_loras = self._normalize_selected_loras(last.get("selected_loras"))
             parts = [last.get("positive", "")]
@@ -18410,7 +21400,7 @@ class ComfyImageGenMod(loader.Module):
                     parts.append(f'-cfg {last["cfg"]}')
                 if last.get("denoise") is not None:
                     parts.append(f'-denoise {last["denoise"]}')
-            raw_args = " ".join(parts)
+            raw_args = " ".join(parts) + (f" {repeat_delete_flags}" if repeat_delete_flags else "")
 
         base = self._base_url()
         if not base:
@@ -18452,6 +21442,20 @@ class ComfyImageGenMod(loader.Module):
         if limited_mode:
             parsed = self._apply_limited_generation_mode(parsed)
         positive = parsed["positive"]
+
+        if (
+            (parsed.get("translate_prompt") or settings.get("translate_prompt"))
+            and self._contains_cyrillic(positive)
+        ):
+            translated, translation_error = await self._translate_prompt_to_english(positive)
+            if translation_error:
+                if parsed.get("translate_prompt"):
+                    await _answer_trigger_preflight(self.strings("translation_failed"))
+                    return
+                logger.warning("Automatic trigger translation failed: %s", translation_error)
+            else:
+                positive = translated
+                parsed["positive"] = positive
 
         if (
             settings.get("reject_russian_prompt")
@@ -18506,7 +21510,7 @@ class ComfyImageGenMod(loader.Module):
         input_video_path = None
         input_video_name = None
 
-        wf_name = self._canonical_workflow_name(self.get("default_workflow", _DEFAULT_WORKFLOW_NAME))
+        wf_name = self._trigger_workflow_name(settings)
         wf_data = await self._ensure_workflow_data(wf_name)
         if not wf_data:
             available = ", ".join(self._get_all_workflow_names())
@@ -18538,7 +21542,7 @@ class ComfyImageGenMod(loader.Module):
         model = (
             None
             if limited_mode
-            else self._resolve_generation_model(wf_data)
+            else (str(settings.get("model") or "").strip() or self._resolve_generation_model(wf_data))
         )
 
         if has_photo:
@@ -18644,8 +21648,15 @@ class ComfyImageGenMod(loader.Module):
             use_lora_picker=False,
             enhanced=parsed.get("enhance_prompt") and not censored_enhance and positive != original_positive,
             easter_egg=easter_egg,
-            selected_loras={} if limited_mode else (repeat_selected_loras if repeat_requested else self._get_default_lora_presets()),
-            auto_delete_result_delay=settings["auto_delete_delay"] if settings.get("auto_delete") else None,
+            selected_loras={} if limited_mode else (
+                repeat_selected_loras if repeat_requested else self._normalize_selected_loras(settings.get("loras"))
+            ),
+            auto_delete_result_delay=(
+                None if parsed.get("disable_auto_delete")
+                else parsed["auto_delete_delay"] if parsed.get("auto_delete_delay") is not None
+                else settings["auto_delete_delay"] if settings.get("auto_delete")
+                else self._autodelete_delay() if self._autodelete_enabled() else None
+            ),
             trigger_origin={
                 "chat_id": utils.get_chat_id(message),
                 "sender_id": self._trigger_sender_identity(message),
@@ -18666,7 +21677,7 @@ class ComfyImageGenMod(loader.Module):
         await self._maybe_render_cloud_confirm(
             await self._make_trigger_inline_anchor(message),
             generation_state,
-            skip_confirm=True,
+            skip_confirm=bool(settings.get("cloud_skip_confirm", True)),
         )
 
     @loader.watcher()
@@ -19041,7 +22052,7 @@ class ComfyImageGenMod(loader.Module):
     async def ctools(self, message: Message):
         """ [-upscale (0.1-8x)|-rmbg|-fps] - upscale media, remove background, boost video FPS"""
         reply = await message.get_reply_message()
-        reply_kind = await self._reply_media_kind_for_message(message, reply, context="ctools")
+        reply_kind = self._reply_media_kind(reply)
         raw_args = utils.get_args_raw(message).strip()
         if not raw_args:
             if not reply_kind:
@@ -19109,12 +22120,14 @@ class ComfyImageGenMod(loader.Module):
         await self._render_cshare_preview(message, state)
 
     @loader.command(
-        ru_doc=" [промпт] - Генерация изображения. -r, -neg, -w, -h, -steps, -cfg, -seed, -denoise, -lora, -ai, -noai, -i",
+        ru_doc=" [промпт] - Генерация изображения. -r, -neg, -w, -h, -steps, -cfg, -seed, -denoise, -lora, -ai, -noai, -i, -t",
         aliases=["img"],
     )
-    async def comfy(self, message: Message):
-        """ [prompt] - Generate image. -r, -neg, -w, -h, -steps, -cfg, -seed, -denoise, -lora, -ai, -noai, -i"""
+    async def comfy(self, message: Message, _input_media=None, _resume_target=None):
+        """ [prompt] - Generate image. -r, -neg, -w, -h, -steps, -cfg, -seed, -denoise, -lora, -ai, -noai, -i, -t, -nodel, -del seconds"""
         raw_args = utils.get_args_raw(message)
+        if _input_media is None and await self._open_album_picker(message):
+            return
         limited_mode = self._workflow_limited_mode()
         repeat_requested = bool(raw_args and re.search(r'-r\b|-repeat\b', raw_args, re.IGNORECASE))
         repeat_selected_loras = {}
@@ -19123,7 +22136,6 @@ class ComfyImageGenMod(loader.Module):
             last = self.get("last_generation")
             if not last:
                 return await self._safe_answer(message, self.strings("repeat_no_last"))
-            # Model, workflow, and seed are intentionally not reused during repeat generation.
             if not limited_mode:
                 repeat_selected_loras = self._normalize_selected_loras(last.get("selected_loras"))
             parts = [last.get("positive", "")]
@@ -19153,7 +22165,18 @@ class ComfyImageGenMod(loader.Module):
         async def _ensure_preflight(string_key="preflight_preparing"):
             nonlocal preflight_target
             if preflight_target is None:
-                preflight_target = await self._create_generation_preflight(message, string_key)
+                if _resume_target is not None:
+                    preflight_target = (
+                        await self._render_inline(
+                            _resume_target,
+                            self._format_generation_preflight_inline(
+                                self.strings(string_key)
+                            ),
+                        )
+                        or _resume_target
+                    )
+                else:
+                    preflight_target = await self._create_generation_preflight(message, string_key)
             else:
                 preflight_target = await self._update_generation_preflight(preflight_target, string_key) or preflight_target
             return preflight_target
@@ -19170,12 +22193,15 @@ class ComfyImageGenMod(loader.Module):
         image_only_workflow = False
 
         if not raw_args:
-            preloaded_reply = await message.get_reply_message()
-            preloaded_reply_kind = await self._reply_media_kind_for_message(
-                message,
-                preloaded_reply,
-                context="generation",
-            )
+            if _input_media is not None:
+                preloaded_reply = _input_media
+                preloaded_reply_kind = self._reply_media_kind(_input_media)
+            else:
+                preloaded_reply = await message.get_reply_message()
+                preloaded_reply, preloaded_reply_kind = await self._generation_input_media(
+                    message,
+                    preloaded_reply,
+                )
             if not preloaded_reply_kind:
                 return await self._safe_answer(message, self.strings("no_prompt"))
             await _ensure_preflight("preflight_workflow")
@@ -19187,9 +22213,24 @@ class ComfyImageGenMod(loader.Module):
 
         parsed = self._parse_gen_args(raw_args)
         default_lora_data = self._get_default_lora_data()
-        default_selected_loras = self._get_enabled_lora_presets(default_lora_data.get("selected"))
-        picker_lora_entries = default_lora_data.get("selected")
-        if self._argset_enabled(default_lora_data):
+        lora_presets_enabled = self._argset_enabled(default_lora_data)
+        default_selected_loras = (
+            self._get_enabled_lora_presets(default_lora_data.get("selected"))
+            if lora_presets_enabled
+            else {}
+        )
+        picker_lora_entries = default_lora_data.get("selected") or {}
+        if not lora_presets_enabled:
+            picker_lora_entries = {
+                lora_name: {
+                    "enabled": False,
+                    "weight": entry.get("weight", 0.75)
+                    if isinstance(entry, dict)
+                    else entry,
+                }
+                for lora_name, entry in picker_lora_entries.items()
+            }
+        if lora_presets_enabled:
             parsed["use_lora_picker"] = True
         if repeat_requested:
             picker_lora_entries = repeat_selected_loras
@@ -19214,6 +22255,13 @@ class ComfyImageGenMod(loader.Module):
             if parsed["negative"] is None and inspired_prompt.get("negative"):
                 parsed["negative"] = inspired_prompt["negative"]
 
+        if parsed.get("translate_prompt") and positive:
+            translated, translation_error = await self._translate_prompt_to_english(positive)
+            if translation_error:
+                return await _finish_preflight(self.strings("translation_failed"))
+            positive = translated
+            parsed["positive"] = positive
+
         if not positive and not image_only_workflow:
             return await _finish_preflight(self.strings("no_prompt"))
         if positive and positive.strip().lower() == "ничего":
@@ -19229,12 +22277,14 @@ class ComfyImageGenMod(loader.Module):
         parsed_steps = parsed["steps"]
         parsed_cfg = parsed["cfg"]
 
-        reply = preloaded_reply or await message.get_reply_message()
-        reply_kind = preloaded_reply_kind or await self._reply_media_kind_for_message(
-            message,
-            reply,
-            context="generation",
-        )
+        if _input_media is not None:
+            reply = _input_media
+            reply_kind = self._reply_media_kind(_input_media)
+        elif preloaded_reply_kind:
+            reply = preloaded_reply
+            reply_kind = preloaded_reply_kind
+        else:
+            reply, reply_kind = await self._generation_input_media(message)
         has_photo = reply_kind == "image"
         has_video = reply_kind == "video"
         input_filename = None
@@ -19381,6 +22431,11 @@ class ComfyImageGenMod(loader.Module):
             easter_egg=easter_egg,
             selected_loras={} if promptless_media_workflow else (repeat_selected_loras or default_selected_loras),
             lora_entries={} if promptless_media_workflow else picker_lora_entries,
+            auto_delete_result_delay=(
+                None if parsed.get("disable_auto_delete")
+                else parsed["auto_delete_delay"] if parsed.get("auto_delete_delay") is not None
+                else self._autodelete_delay() if self._autodelete_enabled() else None
+            ),
             reuse_status_message=isinstance(preflight_target, Message),
             sampler_name=parsed.get("sampler_name"),
             scheduler=parsed.get("scheduler"),
@@ -19462,13 +22517,32 @@ class ComfyImageGenMod(loader.Module):
 
         result = state.get("result")
         if isinstance(result, dict):
-            lines.append(
-                self.strings(
-                    "cdown_result_ready"
-                    if result.get("status") == 200
-                    else "cdown_result_started"
+            if result.get("status") == 200:
+                lines.append(self.strings("cdown_result_ready"))
+            elif result.get("status") == "failed":
+                lines.append(
+                    self.strings("cdown_result_failed").format(
+                        utils.escape_html(str(result.get("error") or "-")[:500])
+                    )
                 )
-            )
+            else:
+                lines.append(self.strings("cdown_result_started"))
+            task_id = str(result.get("task_id") or "").strip()
+            if task_id:
+                lines.append(
+                    self.strings("cdown_task").format(
+                        utils.escape_html(task_id)
+                    )
+                )
+            task_status = str(result.get("task_status") or "").strip()
+            if task_status:
+                lines.append(
+                    self.strings("cdown_task_status").format(
+                        utils.escape_html(task_status)
+                    )
+                )
+            if result.get("status") not in (200, "failed"):
+                lines.append(self.strings("cdown_task_waiting"))
         return lines
 
     def _cdown_text(self, state):
@@ -19518,16 +22592,29 @@ class ComfyImageGenMod(loader.Module):
                 }
             ]
         )
-        markup.append(
-            [
-                {
-                    "text": self.strings("cdown_btn_install"),
-                    "callback": self._cdown_install,
-                    "args": (state_id,),
-                    "style": "success",
-                }
-            ]
-        )
+        result = state.get("result") if isinstance(state.get("result"), dict) else {}
+        if result.get("status") not in (200, 202):
+            markup.append(
+                [
+                    {
+                        "text": self.strings("cdown_btn_install"),
+                        "callback": self._cdown_install,
+                        "args": (state_id,),
+                        "style": "success",
+                    }
+                ]
+            )
+        if result.get("status") == 202:
+            markup.append(
+                [
+                    {
+                        "text": self.strings("cdown_btn_refresh"),
+                        "callback": self._cdown_refresh_status,
+                        "args": (state_id,),
+                        "style": "primary",
+                    }
+                ]
+            )
         markup.append(
             [
                 {
@@ -19634,6 +22721,25 @@ class ComfyImageGenMod(loader.Module):
                 pass
         await self._cdown_render(call, state_id)
 
+    async def _cdown_refresh_status(self, call: InlineCall, state_id: str):
+        state = self._cdown_get_state(state_id)
+        result = state.get("result")
+        if not isinstance(result, dict) or result.get("status") != 202:
+            return await self._cdown_render(call, state_id)
+        try:
+            await call.answer(self.strings("cdown_checking"))
+        except Exception:
+            pass
+        try:
+            api_key = self._cloud_api_key_or_raise()
+            await self._cdown_update_import_status(state, api_key)
+            result = state.get("result") if isinstance(state.get("result"), dict) else {}
+            if result.get("status") == 202:
+                self._cdown_start_watch(call, state_id, api_key)
+        except Exception as e:
+            logger.debug("Cloud download status refresh failed: %s", e)
+        await self._cdown_render(call, state_id)
+
     async def _cdown_install(self, call: InlineCall, state_id: str):
         state = self._cdown_get_state(state_id)
         if not self._get_cloud_api_keys():
@@ -19666,11 +22772,36 @@ class ComfyImageGenMod(loader.Module):
             pass
 
         try:
-            status, data = await self._cdown_download_asset(state)
-            state["result"] = {"status": status, "data": data}
+            api_key = self._cloud_api_key_or_raise()
+            status, data = await self._cdown_download_asset(state, api_key)
+            task_id = (
+                str(data.get("task_id") or "").strip()
+                if isinstance(data, dict)
+                else ""
+            )
+            state["result"] = {
+                "status": status,
+                "data": data,
+                "task_id": task_id,
+                "task_status": (
+                    str(data.get("status") or "created")
+                    if status == 202 and isinstance(data, dict)
+                    else "completed"
+                ),
+            }
             self._comfy_cache.clear()
             if status == 202:
-                self._cdown_start_watch(call, state_id)
+                self._cdown_start_watch(call, state_id, api_key)
+            elif status == 200:
+                asset = data if self._clib_asset_id(data) else None
+                if not asset:
+                    try:
+                        asset = await self._cdown_find_downloaded_asset(state, api_key)
+                    except Exception as e:
+                        logger.debug("Cloud LoRA asset lookup failed: %s", e)
+                if asset:
+                    await self._cdown_finalize_asset_category(state, asset, api_key)
+                self._cdown_start_lora_metadata_fetch(state, asset)
             try:
                 await call.answer(
                     self._plain_text(
@@ -19721,16 +22852,547 @@ class ComfyImageGenMod(loader.Module):
         self._cdown_states[state_id] = state
         await self._cdown_render(message, state_id)
 
+    def _clib_new_state(self, assets=None):
+        return {
+            "assets": list(assets or []),
+            "folder": None,
+            "asset_id": None,
+            "search_query": "",
+            "page": 0,
+        }
+
+    def _clib_get_state(self, state_id):
+        state = self._clib_states.get(state_id)
+        return state if isinstance(state, dict) else None
+
+    def _clib_find_asset(self, state, asset_id):
+        asset_id = str(asset_id or "").strip()
+        for asset in state.get("assets") or []:
+            if self._clib_asset_id(asset) == asset_id:
+                return asset
+        return None
+
+    def _clib_nav_row(self, state_id, page, total_pages, callback):
+        row = []
+        if page > 0:
+            row.append({
+                "text": "◀️",
+                "callback": callback,
+                "args": (state_id, -1),
+            })
+        if page < total_pages - 1:
+            row.append({
+                "text": "▶️",
+                "callback": callback,
+                "args": (state_id, 1),
+            })
+        return row
+
+    async def _clib_render_folders(self, target, state_id):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        search_query = " ".join(str(state.get("search_query") or "").split())
+        search_key = search_query.casefold()
+        assets = [
+            asset
+            for asset in state.get("assets") or []
+            if not search_key
+            or search_key in str(self._cloud_asset_model_name(asset) or "").casefold()
+        ]
+        groups = self._clib_asset_groups(assets)
+        folders = list(groups)
+        page_size = 15
+        total_pages = max(1, (len(folders) + page_size - 1) // page_size)
+        page = min(max(0, int(state.get("page") or 0)), total_pages - 1)
+        state["page"] = page
+        current = folders[page * page_size:(page + 1) * page_size]
+        lines = [
+            self.strings("clib_title"),
+            self.strings("clib_summary").format(
+                len(assets),
+                len(folders),
+            ),
+        ]
+        if search_query:
+            lines.append(
+                self.strings("models_search_label").format(
+                    utils.escape_html(search_query)
+                )
+            )
+        if not folders:
+            lines.append(
+                self.strings("models_search_empty")
+                if search_query
+                else self.strings("clib_empty")
+            )
+        else:
+            lines.append(self.strings("models_page").format(page + 1, total_pages))
+        buttons = [
+            {
+                "text": f"📁 {self._model_short_button_text(folder, limit=22)} ({len(groups[folder])})",
+                "callback": self._clib_open_folder,
+                "args": (state_id, folder),
+            }
+            for folder in current
+        ]
+        markup = self._build_button_rows(buttons, columns=2)
+        nav = self._clib_nav_row(state_id, page, total_pages, self._clib_folders_page)
+        if nav:
+            markup.append(nav)
+        search_row = [{
+            "text": self.strings("models_search_btn"),
+            "input": self.strings("models_search_input"),
+            "handler": self._clib_search_input,
+            "args": (state_id,),
+        }]
+        if search_query:
+            search_row.append({
+                "text": self.strings("models_search_clear"),
+                "callback": self._clib_search_clear,
+                "args": (state_id,),
+            })
+        markup.append(search_row)
+        markup.append([
+            {
+                "text": self.strings("clib_btn_refresh"),
+                "callback": self._clib_refresh,
+                "args": (state_id,),
+                "style": "primary",
+            },
+            {
+                "text": self.strings("btn_close"),
+                "callback": self._safe_close_form,
+                "style": "danger",
+            },
+        ])
+        await self._render_inline(target, "\n".join(lines), markup)
+
+    async def _clib_render_items(self, target, state_id):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        folder = str(state.get("folder") or "")
+        groups = self._clib_asset_groups(state.get("assets"))
+        assets = list(groups.get(folder) or [])
+        page_size = 6
+        total_pages = max(1, (len(assets) + page_size - 1) // page_size)
+        page = min(max(0, int(state.get("page") or 0)), total_pages - 1)
+        state["page"] = page
+        current = assets[page * page_size:(page + 1) * page_size]
+        lines = [
+            self.strings("clib_title"),
+            self.strings("clib_folder_title").format(utils.escape_html(folder)),
+        ]
+        if not assets:
+            lines.append(self.strings("clib_empty"))
+        else:
+            for asset in current:
+                name = self._cloud_asset_model_name(asset) or "-"
+                lines.append(
+                    "<blockquote>"
+                    + utils.escape_html(self._format_model_name(name, max_length=None))
+                    + "\n<code>"
+                    + utils.escape_html(self._cdown_format_size(asset.get("size")))
+                    + "</code></blockquote>"
+                )
+            lines.append(self.strings("models_page").format(page + 1, total_pages))
+        buttons = [
+            {
+                "text": self._model_short_button_text(
+                    self._cloud_asset_model_name(asset) or "-",
+                    limit=30,
+                ),
+                "callback": self._clib_open_asset,
+                "args": (state_id, self._clib_asset_id(asset)),
+            }
+            for asset in current
+        ]
+        markup = self._build_button_rows(buttons, columns=1)
+        nav = self._clib_nav_row(state_id, page, total_pages, self._clib_items_page)
+        if nav:
+            markup.append(nav)
+        markup.append([
+            {
+                "text": self.strings("btn_back"),
+                "callback": self._clib_back_folders,
+                "args": (state_id,),
+                "style": "primary",
+            },
+            {
+                "text": self.strings("btn_close"),
+                "callback": self._safe_close_form,
+                "style": "danger",
+            },
+        ])
+        await self._render_inline(target, "\n".join(lines), markup)
+
+    async def _clib_render_asset(self, target, state_id):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        asset = self._clib_find_asset(state, state.get("asset_id"))
+        if not asset:
+            return await self._clib_render_items(target, state_id)
+        name = self._cloud_asset_model_name(asset) or "-"
+        tags = ", ".join(str(tag) for tag in asset.get("tags") or []) or "-"
+        lines = [
+            self.strings("clib_title"),
+            self.strings("clib_name").format(utils.escape_html(name)),
+            self.strings("cdown_size").format(self._cdown_format_size(asset.get("size"))),
+            self.strings("clib_category").format(
+                utils.escape_html(self._clib_asset_folder(asset))
+            ),
+            self.strings("clib_tags").format(utils.escape_html(tags[:500])),
+        ]
+        if asset.get("is_immutable"):
+            lines.append(self.strings("clib_immutable"))
+        markup = []
+        if not asset.get("is_immutable"):
+            markup.append([
+                {
+                    "text": self.strings("clib_btn_move"),
+                    "callback": self._clib_move_menu,
+                    "args": (state_id,),
+                    "style": "primary",
+                }
+            ])
+            markup.append([
+                {
+                    "text": self.strings("clib_btn_delete"),
+                    "callback": self._clib_delete_confirm,
+                    "args": (state_id,),
+                    "style": "danger",
+                }
+            ])
+        markup.append([
+            {
+                "text": self.strings("btn_back"),
+                "callback": self._clib_back_items,
+                "args": (state_id,),
+                "style": "primary",
+            },
+            {
+                "text": self.strings("btn_close"),
+                "callback": self._safe_close_form,
+                "style": "danger",
+            },
+        ])
+        await self._render_inline(target, "\n".join(lines), markup)
+
+    async def _clib_render_move_menu(self, target, state_id):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        asset = self._clib_find_asset(state, state.get("asset_id"))
+        if not asset:
+            return await self._clib_render_items(target, state_id)
+        selected = self._clib_asset_type(asset)
+        buttons = []
+        for type_id in _CDOWN_TYPES:
+            is_selected = type_id == selected
+            buttons.append({
+                "text": ("✅ " if is_selected else "") + self._cdown_type_label(type_id),
+                "callback": self._clib_move_category,
+                "args": (state_id, type_id),
+                "style": "success" if is_selected else "primary",
+            })
+        markup = self._build_button_rows(buttons, columns=3)
+        markup.append([
+            {
+                "text": self.strings("btn_back"),
+                "callback": self._clib_back_asset,
+                "args": (state_id,),
+                "style": "primary",
+            },
+            {
+                "text": self.strings("btn_close"),
+                "callback": self._safe_close_form,
+                "style": "danger",
+            },
+        ])
+        await self._render_inline(
+            target,
+            "\n".join([
+                self.strings("clib_title"),
+                self.strings("clib_move_title"),
+                self.strings("clib_name").format(
+                    utils.escape_html(self._cloud_asset_model_name(asset) or "-")
+                ),
+            ]),
+            markup,
+        )
+
+    async def _clib_open_folder(self, call: InlineCall, state_id: str, folder: str):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        state.update({"folder": str(folder), "asset_id": None, "page": 0})
+        await self._clib_render_items(call, state_id)
+
+    async def _clib_open_asset(self, call: InlineCall, state_id: str, asset_id: str):
+        state = self._clib_get_state(state_id)
+        if not state or not self._clib_find_asset(state, asset_id):
+            return
+        state.update({"asset_id": asset_id, "page": 0})
+        await self._clib_render_asset(call, state_id)
+
+    async def _clib_folders_page(self, call: InlineCall, state_id: str, delta: int):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        state["page"] = int(state.get("page") or 0) + int(delta)
+        await self._clib_render_folders(call, state_id)
+
+    async def _clib_items_page(self, call: InlineCall, state_id: str, delta: int):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        state["page"] = int(state.get("page") or 0) + int(delta)
+        await self._clib_render_items(call, state_id)
+
+    async def _clib_back_folders(self, call: InlineCall, state_id: str):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        state.update({"folder": None, "asset_id": None, "page": 0})
+        await self._clib_render_folders(call, state_id)
+
+    async def _clib_back_items(self, call: InlineCall, state_id: str):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        state.update({"asset_id": None, "page": 0})
+        await self._clib_render_items(call, state_id)
+
+    async def _clib_back_asset(self, call: InlineCall, state_id: str):
+        await self._clib_render_asset(call, state_id)
+
+    async def _clib_move_menu(self, call: InlineCall, state_id: str):
+        await self._clib_render_move_menu(call, state_id)
+
+    async def _clib_delete_confirm(self, call: InlineCall, state_id: str):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        asset = self._clib_find_asset(state, state.get("asset_id"))
+        if not asset:
+            return await self._clib_render_items(call, state_id)
+        if asset.get("is_immutable"):
+            return await self._clib_render_asset(call, state_id)
+        markup = [[
+            {
+                "text": self.strings("clib_delete_confirm"),
+                "callback": self._clib_delete_asset,
+                "args": (state_id,),
+                "style": "danger",
+            },
+            {
+                "text": self.strings("btn_back"),
+                "callback": self._clib_back_asset,
+                "args": (state_id,),
+                "style": "primary",
+            },
+        ], [
+            {
+                "text": self.strings("btn_close"),
+                "callback": self._safe_close_form,
+                "style": "danger",
+            }
+        ]]
+        await self._render_inline(
+            call,
+            "\n".join([
+                self.strings("clib_title"),
+                self.strings("clib_delete_title"),
+                self.strings("clib_name").format(
+                    utils.escape_html(self._cloud_asset_model_name(asset) or "-")
+                ),
+            ]),
+            markup,
+        )
+
+    async def _clib_delete_asset(self, call: InlineCall, state_id: str):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        asset = self._clib_find_asset(state, state.get("asset_id"))
+        if not asset:
+            return await self._clib_render_items(call, state_id)
+        if asset.get("is_immutable"):
+            return await self._clib_render_asset(call, state_id)
+        asset_id = self._clib_asset_id(asset)
+        if not asset_id:
+            return await self._clib_render_items(call, state_id)
+        try:
+            await call.answer(self.strings("clib_deleting"))
+        except Exception:
+            pass
+        try:
+            async with self._session_delete(
+                f"{_COMFY_CLOUD_BASE_URL}/api/assets/{quote(asset_id, safe='')}",
+                headers=self._cloud_headers(self._cloud_api_key_or_raise()),
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                text = await resp.text()
+                if resp.status not in (200, 204):
+                    raise ComfyUIHTTPError(resp.status, text)
+            state["assets"] = [
+                item
+                for item in state.get("assets") or []
+                if self._clib_asset_id(item) != asset_id
+            ]
+            state["asset_id"] = None
+            self._comfy_cache.clear()
+            try:
+                await call.answer(self.strings("clib_deleted"))
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug("Cloud library asset deletion failed: %s", e)
+            try:
+                await call.answer(self._plain_text(str(e))[:180], show_alert=True)
+            except Exception:
+                pass
+        await self._clib_render_items(call, state_id)
+
+    async def _clib_move_category(self, call: InlineCall, state_id: str, type_id: str):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        asset = self._clib_find_asset(state, state.get("asset_id"))
+        if not asset:
+            return await self._clib_render_items(call, state_id)
+        if type_id == self._clib_asset_type(asset):
+            return await self._clib_render_asset(call, state_id)
+        try:
+            await call.answer(self.strings("clib_updating"))
+        except Exception:
+            pass
+        try:
+            await self._clib_update_asset_category(
+                asset,
+                type_id,
+                self._cloud_api_key_or_raise(),
+            )
+            try:
+                await call.answer(self.strings("clib_moved"))
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug("Cloud library category update failed: %s", e)
+            try:
+                await call.answer(self._plain_text(str(e))[:180], show_alert=True)
+            except Exception:
+                pass
+        await self._clib_render_asset(call, state_id)
+
+    async def _clib_refresh(self, call: InlineCall, state_id: str):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        try:
+            await call.answer(self.strings("clib_loading"))
+        except Exception:
+            pass
+        try:
+            state["assets"] = await self._clib_fetch_model_assets(
+                self._cloud_api_key_or_raise()
+            )
+            state.update({"folder": None, "asset_id": None, "page": 0})
+            self._comfy_cache.clear()
+        except Exception as e:
+            logger.debug("Cloud library refresh failed: %s", e)
+            try:
+                await call.answer(self._plain_text(str(e))[:180], show_alert=True)
+            except Exception:
+                pass
+        await self._clib_render_folders(call, state_id)
+
+    async def _clib_search_input(self, call: InlineCall, query: str, state_id: str):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        state.update({
+            "search_query": " ".join(str(query or "").split()),
+            "folder": None,
+            "asset_id": None,
+            "page": 0,
+        })
+        await self._clib_render_folders(self._source_inline_target(call), state_id)
+
+    async def _clib_search_clear(self, call: InlineCall, state_id: str):
+        state = self._clib_get_state(state_id)
+        if not state:
+            return
+        state.update({
+            "search_query": "",
+            "folder": None,
+            "asset_id": None,
+            "page": 0,
+        })
+        await self._clib_render_folders(call, state_id)
+
     @loader.command(
-        ru_doc=" - Дополнительные настройки/функции. -bl [reply/@user/id] (блэклист для триггеров)",
+        ru_doc=" - библиотека импортированных моделей ComfyUI Cloud",
+    )
+    async def clib(self, message: Message):
+        """ - ComfyUI Cloud imported model library"""
+        if not self._get_cloud_api_keys():
+            return await self._safe_answer(message, self.strings("clib_no_key"))
+        try:
+            assets = await self._clib_fetch_model_assets(
+                self._cloud_api_key_or_raise()
+            )
+        except Exception as e:
+            logger.debug("Cloud library load failed: %s", e)
+            return await self._safe_answer(
+                message,
+                utils.escape_html(self._plain_text(str(e))[:500]),
+            )
+        state_id = str(uuid.uuid4())
+        self._clib_states[state_id] = self._clib_new_state(assets)
+        await self._clib_render_folders(message, state_id)
+
+    @loader.command(
+        ru_doc=" [воркфлоу] | [-bl] - Настройки модуля/Доп. функции. Быстрый выбор воркфлоу для триггера этого чата. -bl [reply/@user/id] (блэклист для триггеров)",
     )
     async def ultcomfy(self, message: Message):
-        """ - Open additional settings/functions. -bl [reply/@user/id] (trigger blacklist)"""
+        """[workflow] | [-bl] - Module settings/additional functions and chat trigger workflow. -bl [reply/@user/id] (trigger blacklist)"""
         self._ensure_ult_settings()
         raw_args = utils.get_args_raw(message)
         if re.search(r"(^|\s)-bl(\s|$)", raw_args, re.IGNORECASE):
             query = re.sub(r"(^|\s)-bl(\s|$)", " ", raw_args, flags=re.IGNORECASE).strip()
             return await self._ult_toggle_trigger_blacklist_user(message, query)
+        workflow_query = str(raw_args or "").strip()
+        if workflow_query:
+            chat_id = utils.get_chat_id(message)
+            settings = self._get_trigger_settings_for_chat(chat_id)
+            if workflow_query.lower() in {"default", "дефолт", "поумолчанию"}:
+                settings["workflow"] = ""
+                self._set_trigger_settings_for_chat(chat_id, settings)
+                return await self._safe_answer(
+                    message,
+                    self.strings("ult_trigger_workflow_default_set"),
+                )
+            workflow_name = self._canonical_workflow_name(workflow_query)
+            available = self._trigger_workflow_choices()
+            if workflow_name not in available:
+                return await self._safe_answer(
+                    message,
+                    self.strings("wf_not_found").format(
+                        utils.escape_html(workflow_query),
+                        utils.escape_html(", ".join(available)),
+                    ),
+                )
+            settings["workflow"] = workflow_name
+            self._set_trigger_settings_for_chat(chat_id, settings)
+            return await self._safe_answer(
+                message,
+                self.strings("ult_trigger_workflow_set").format(
+                    utils.escape_html(workflow_name)
+                ),
+            )
         await self._ult_render_main(message)
 
     @loader.command(
@@ -19746,6 +23408,82 @@ class ComfyImageGenMod(loader.Module):
         )
         if not rendered:
             await self._smart_answer(message, self.strings("help_text"))
+
+    def _onboarding_text(self):
+        return "\n\n".join([
+            self.strings("onboarding_title"),
+            self.strings("onboarding_prompt"),
+            self.strings("onboarding_local"),
+            self.strings("onboarding_cloud"),
+        ])
+
+    def _onboarding_markup(self):
+        return [
+            [{
+                "text": self.strings("onboarding_btn_local"),
+                "callback": self._onboarding_select_backend,
+                "args": (_COMFY_BACKEND_LOCAL,),
+            }],
+            [{
+                "text": self.strings("onboarding_btn_cloud"),
+                "callback": self._onboarding_select_backend,
+                "args": (_COMFY_BACKEND_CLOUD,),
+                "style": "primary",
+            }],
+        ]
+
+    def _is_onboarding_loader_message(self, message):
+        if not message or not getattr(message, "out", False):
+            return False
+        text = str(getattr(message, "raw_text", None) or getattr(message, "message", ""))
+        return self.strings("name").lower() in text.lower()
+
+    async def _show_onboarding_after_install(self):
+        try:
+            for _ in range(10):
+                if self._unloading or not self.get("onboarding_pending", False):
+                    return
+                await asyncio.sleep(0.5)
+                async for dialog in self.client.iter_dialogs(limit=30):
+                    message = getattr(dialog, "message", None)
+                    if not self._is_onboarding_loader_message(message):
+                        continue
+                    text = self._onboarding_text()
+                    guide_message = await message.respond(self._plain_text(text))
+                    rendered = await self._render_inline(guide_message, text, self._onboarding_markup())
+                    if not rendered:
+                        await self._safe_answer(guide_message, text)
+                    self.set("onboarding_pending", False)
+                    self.set("onboarding_shown", True)
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("Failed to show ComfyImageGen onboarding: %s", e)
+
+    async def _set_comfy_backend_mode(self, backend):
+        backend = _COMFY_BACKEND_CLOUD if backend == _COMFY_BACKEND_CLOUD else _COMFY_BACKEND_LOCAL
+        self.config["comfyui_backend"] = backend
+        if backend == _COMFY_BACKEND_CLOUD:
+            if self._workflow_model_autoswitch_enabled():
+                self._set_cloud_model_as_workflow(True)
+            self.set("default_workflow", _DEFAULT_CLOUD_WORKFLOW_NAME)
+            self._set_workflow_limited_mode(False)
+            await self._autoswitch_model_to_workflow(_DEFAULT_CLOUD_WORKFLOW_NAME)
+            self._update_default_arg_values()
+        self._comfy_cache.clear()
+        if backend == _COMFY_BACKEND_LOCAL:
+            self._restore_tunnel_watch_state()
+        return backend
+
+    async def _onboarding_select_backend(self, call: InlineCall, backend: str):
+        backend = await self._set_comfy_backend_mode(backend)
+        self.set("onboarding_completed", True)
+        try:
+            await call.answer(self.strings("onboarding_saved"))
+        except Exception:
+            pass
+        await self.chelp(call)
 
     async def _render_cmode(self, call_or_message):
         backend = self._comfy_backend()
@@ -19805,16 +23543,7 @@ class ComfyImageGenMod(loader.Module):
         await self._render_inline(call_or_message, "\n".join(lines), markup)
 
     async def _cmode_select(self, call: InlineCall, backend: str):
-        backend = _COMFY_BACKEND_CLOUD if backend == _COMFY_BACKEND_CLOUD else _COMFY_BACKEND_LOCAL
-        self.config["comfyui_backend"] = backend
-        if backend == _COMFY_BACKEND_CLOUD:
-            self._set_cloud_model_as_workflow(True)
-            self.set("default_workflow", _DEFAULT_CLOUD_WORKFLOW_NAME)
-            self._set_workflow_limited_mode(False)
-            self._update_default_arg_values()
-        self._comfy_cache.clear()
-        if backend == _COMFY_BACKEND_LOCAL:
-            self._restore_tunnel_watch_state()
+        backend = await self._set_comfy_backend_mode(backend)
         try:
             await call.answer(self.strings("mode_saved").format(self._format_comfy_backend_name(backend)))
         except Exception:
@@ -20293,8 +24022,12 @@ class ComfyImageGenMod(loader.Module):
         state = self._models_page_cache.get(state_id)
         if not state:
             return
-        models = list(state.get("models") or [])
-        page = state.get("page", 0)
+        search_query = " ".join(str(state.get("search_query") or "").split())
+        models = self._filter_names_by_query(
+            state.get("models") or [],
+            search_query,
+        )
+        page = int(state.get("page") or 0)
         per_page = 6
         total_pages = max(1, (len(models) + per_page - 1) // per_page)
         page = min(max(0, page), total_pages - 1)
@@ -20310,6 +24043,12 @@ class ComfyImageGenMod(loader.Module):
                 utils.escape_html(self._cloud_model_current_text(state))
             ),
         ]
+        if search_query:
+            lines.append(
+                self.strings("models_search_label").format(
+                    utils.escape_html(search_query)
+                )
+            )
         for model in page_models:
             icon = (
                 '<tg-emoji emoji-id="5206607081334906820">\u2705</tg-emoji>'
@@ -20320,7 +24059,11 @@ class ComfyImageGenMod(loader.Module):
                 f"<blockquote>{icon} {utils.escape_html(self._format_model_name(model, max_length=None))}</blockquote>"
             )
         if not models:
-            lines.append(self.strings("models_cloud_empty_models"))
+            lines.append(
+                self.strings("models_search_empty")
+                if search_query
+                else self.strings("models_cloud_empty_models")
+            )
         else:
             lines.append(self.strings("models_page").format(page + 1, total_pages))
 
@@ -20340,6 +24083,19 @@ class ComfyImageGenMod(loader.Module):
             nav_row.append({"text": "\u25b6\ufe0f", "callback": self._model_cloud_page, "args": (state_id, 1)})
         if nav_row:
             markup.append(nav_row)
+        search_row = [{
+            "text": self.strings("models_search_btn"),
+            "input": self.strings("models_search_input"),
+            "handler": self._model_search_input,
+            "args": (state_id,),
+        }]
+        if search_query:
+            search_row.append({
+                "text": self.strings("models_search_clear"),
+                "callback": self._model_search_clear,
+                "args": (state_id,),
+            })
+        markup.append(search_row)
         markup.append([
             {"text": self.strings("btn_back"), "callback": self._model_cloud_back_folders, "args": (state_id,)},
             {"text": self.strings("btn_close"), "callback": self._safe_close_form, "style": "danger"},
@@ -20347,6 +24103,8 @@ class ComfyImageGenMod(loader.Module):
         await self._render_inline(call_or_message, "\n".join(lines), markup)
 
     async def _model_cloud_as_workflow(self, call: InlineCall, state_id: str):
+        if state_id not in self._models_page_cache:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         self._set_cloud_model_as_workflow(True)
         try:
             await call.answer(self.strings("toast_model_as_workflow"))
@@ -20357,22 +24115,14 @@ class ComfyImageGenMod(loader.Module):
     async def _model_cloud_source(self, call: InlineCall, state_id: str, source: str):
         state = self._models_page_cache.get(state_id)
         if not state:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         source = "custom" if source == "custom" else "default"
-        try:
-            await call.answer(self.strings("models_loading"))
-        except Exception:
-            pass
         if source == "custom":
             try:
                 groups = await self._get_cloud_user_model_asset_groups()
             except Exception as e:
                 logger.debug("Cloud user model assets failed: %s", e)
-                try:
-                    await call.answer(self._plain_text(str(e))[:180], show_alert=True)
-                except Exception:
-                    pass
-                return await self._render_cloud_model_main(call, state_id)
+                return await self._safe_call_answer(call, self.strings("models_load_failed"), show_alert=True)
             folders = sorted(groups.keys(), key=str.lower)
             if not folders:
                 try:
@@ -20381,7 +24131,11 @@ class ComfyImageGenMod(loader.Module):
                     pass
             state["custom_groups"] = groups
         else:
-            folder_data = await self._get_cloud_model_folders(authenticated=False)
+            try:
+                folder_data = await self._get_cloud_model_folders(authenticated=False)
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as e:
+                logger.warning("Cloud model folders request failed: %s", e)
+                return await self._safe_call_answer(call, self.strings("models_load_failed"), show_alert=True)
             folders = [item["name"] for item in folder_data if isinstance(item, dict) and item.get("name")]
             folders = sorted(folders, key=self._cloud_default_folder_sort_key)
             if not folders:
@@ -20395,6 +24149,7 @@ class ComfyImageGenMod(loader.Module):
             "folders": folders,
             "folder": None,
             "models": [],
+            "search_query": "",
             "page": 0,
         })
         await self._render_cloud_model_folders(call, state_id)
@@ -20402,23 +24157,28 @@ class ComfyImageGenMod(loader.Module):
     async def _model_cloud_folder(self, call: InlineCall, state_id: str, folder: str):
         state = self._models_page_cache.get(state_id)
         if not state:
-            return
-        try:
-            await call.answer(self.strings("models_loading"))
-        except Exception:
-            pass
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         if state.get("source") == "custom":
             groups = state.get("custom_groups")
             if not isinstance(groups, dict):
-                groups = await self._get_cloud_user_model_asset_groups()
+                try:
+                    groups = await self._get_cloud_user_model_asset_groups()
+                except Exception as e:
+                    logger.warning("Cloud user model assets request failed: %s", e)
+                    return await self._safe_call_answer(call, self.strings("models_load_failed"), show_alert=True)
                 state["custom_groups"] = groups
             models = list(groups.get(folder) or [])
         else:
-            models = await self._get_cloud_models_folder_for_scope(folder, authenticated=False)
+            try:
+                models = await self._get_cloud_models_folder_for_scope(folder, authenticated=False)
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as e:
+                logger.warning("Cloud models request failed for %s: %s", folder, e)
+                return await self._safe_call_answer(call, self.strings("models_load_failed"), show_alert=True)
         state.update({
             "view": "cloud_models",
             "folder": folder,
             "models": sorted(dict.fromkeys(models)),
+            "search_query": "",
             "page": 0,
         })
         if not state["models"]:
@@ -20429,6 +24189,8 @@ class ComfyImageGenMod(loader.Module):
         await self._render_cloud_model_items(call, state_id)
 
     async def _model_cloud_select(self, call: InlineCall, state_id: str, model_name: str):
+        if state_id not in self._models_page_cache:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         self.config["model_name"] = model_name
         self._set_cloud_model_as_workflow(False)
         self._sync_argset_for_current_model()
@@ -20445,7 +24207,7 @@ class ComfyImageGenMod(loader.Module):
     async def _model_cloud_page(self, call: InlineCall, state_id: str, direction: int):
         state = self._models_page_cache.get(state_id)
         if not state:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         state["page"] = state.get("page", 0) + direction
         if state.get("view") == "cloud_models":
             await self._render_cloud_model_items(call, state_id)
@@ -20458,7 +24220,7 @@ class ComfyImageGenMod(loader.Module):
     async def _model_cloud_back_folders(self, call: InlineCall, state_id: str):
         state = self._models_page_cache.get(state_id)
         if not state:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         state["view"] = "cloud_folders"
         state["page"] = 0
         await self._render_cloud_model_folders(call, state_id)
@@ -20467,8 +24229,9 @@ class ComfyImageGenMod(loader.Module):
         state = self._models_page_cache.get(state_id)
         if not state:
             return
-        models = state["models"]
-        page = state["page"]
+        search_query = " ".join(str(state.get("search_query") or "").split())
+        models = self._filter_names_by_query(state.get("models") or [], search_query)
+        page = int(state.get("page") or 0)
         per_page = 6
         total_pages = max(1, (len(models) + per_page - 1) // per_page)
         page = min(page, total_pages - 1)
@@ -20480,6 +24243,12 @@ class ComfyImageGenMod(loader.Module):
         workflow_model = state.get("workflow_model") or self._current_workflow_model() or self.strings("not_set")
 
         lines = [self.strings("models_title")]
+        if search_query:
+            lines.append(
+                self.strings("models_search_label").format(
+                    utils.escape_html(search_query)
+                )
+            )
         if self._is_comfy_cloud():
             workflow_icon = '<tg-emoji emoji-id="5206607081334906820">\u2705</tg-emoji>' if cloud_as_workflow else '<tg-emoji emoji-id="5985346521103604145">\u2b1c</tg-emoji>'
             lines.append(
@@ -20492,6 +24261,8 @@ class ComfyImageGenMod(loader.Module):
         for m in page_models:
             icon = '<tg-emoji emoji-id="5206607081334906820">\u2705</tg-emoji>' if (not cloud_as_workflow and m == current_model) else '<tg-emoji emoji-id="5985346521103604145">\u2b1c</tg-emoji>'
             lines.append(f"<blockquote>{icon} {utils.escape_html(self._format_model_name(m, max_length=None))}</blockquote>")
+        if not models:
+            lines.append(self.strings("models_search_empty"))
         lines.append(self.strings("models_page").format(page + 1, total_pages))
         text = "\n".join(lines)
 
@@ -20522,6 +24293,19 @@ class ComfyImageGenMod(loader.Module):
         if nav_row:
             markup.append(nav_row)
 
+        search_row = [{
+            "text": self.strings("models_search_btn"),
+            "input": self.strings("models_search_input"),
+            "handler": self._model_search_input,
+            "args": (state_id,),
+        }]
+        if search_query:
+            search_row.append({
+                "text": self.strings("models_search_clear"),
+                "callback": self._model_search_clear,
+                "args": (state_id,),
+            })
+        markup.append(search_row)
         markup.append([{
             "text": self.strings("models_manual_btn"),
             "input": self.strings("models_manual_input"),
@@ -20535,11 +24319,36 @@ class ComfyImageGenMod(loader.Module):
     async def _model_page(self, call: InlineCall, state_id: str, direction: int):
         state = self._models_page_cache.get(state_id)
         if not state:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         state["page"] += direction
         await self._render_model_list(call, state_id)
 
+    async def _model_search_input(self, call: InlineCall, query: str, state_id: str):
+        state = self._models_page_cache.get(state_id)
+        if not state:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
+        state["search_query"] = " ".join(str(query or "").split())
+        state["page"] = 0
+        target = self._source_inline_target(call)
+        if state.get("view") == "cloud_models":
+            await self._render_cloud_model_items(target, state_id)
+        else:
+            await self._render_model_list(target, state_id)
+
+    async def _model_search_clear(self, call: InlineCall, state_id: str):
+        state = self._models_page_cache.get(state_id)
+        if not state:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
+        state["search_query"] = ""
+        state["page"] = 0
+        if state.get("view") == "cloud_models":
+            await self._render_cloud_model_items(call, state_id)
+        else:
+            await self._render_model_list(call, state_id)
+
     async def _model_select(self, call: InlineCall, state_id: str, model_name: str):
+        if state_id not in self._models_page_cache:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         self.config["model_name"] = model_name
         if self._is_comfy_cloud():
             self._set_cloud_model_as_workflow(False)
@@ -20556,6 +24365,8 @@ class ComfyImageGenMod(loader.Module):
         model_name = str(query or "").strip()
         if not model_name:
             return
+        if state_id not in self._models_page_cache:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         self.config["model_name"] = model_name
         if self._is_comfy_cloud():
             self._set_cloud_model_as_workflow(False)
@@ -20572,6 +24383,8 @@ class ComfyImageGenMod(loader.Module):
             await self._render_model_list(call, state_id)
 
     async def _model_as_workflow(self, call: InlineCall, state_id: str):
+        if state_id not in self._models_page_cache:
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         if self._is_comfy_cloud():
             self._set_cloud_model_as_workflow(True)
         try:
@@ -20607,6 +24420,7 @@ class ComfyImageGenMod(loader.Module):
                 "folders": [],
                 "folder": None,
                 "models": [],
+                "search_query": "",
                 "page": 0,
                 "workflow_model": self._current_workflow_model(),
             }
@@ -20620,13 +24434,20 @@ class ComfyImageGenMod(loader.Module):
             message,
             self._format_generation_preflight_inline(self.strings("models_loading")),
         )
-        models = await self._get_available_checkpoints()
-        if not models and not self._is_comfy_cloud():
+        try:
+            for folder in ("checkpoints", "diffusion_models", "unet_gguf", "unet", "model_patches"):
+                self._comfy_cache.pop(f"local_models:{base}:{folder}", None)
+            models = await self._get_available_checkpoints()
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as e:
+            logger.warning("Could not load ComfyUI models: %s", e)
+            return await self._safe_answer(status or message, self.strings("models_load_failed"))
+        if not models:
             return await self._safe_answer(status or message, self.strings("models_empty"))
 
         state_id = str(uuid.uuid4())
         self._models_page_cache[state_id] = {
             "models": sorted(models),
+            "search_query": "",
             "page": 0,
             "workflow_model": self._current_workflow_model(),
         }
@@ -20657,7 +24478,7 @@ class ComfyImageGenMod(loader.Module):
     async def _wf_show_builtin(self, call: InlineCall, state_id: str):
         state = self._wf_page_cache.get(state_id)
         if not state:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         state["workflows"] = sorted(self._BUILTIN_WORKFLOWS)
         state["wf_type"] = "builtin"
         state["page"] = 0
@@ -20666,7 +24487,7 @@ class ComfyImageGenMod(loader.Module):
     async def _wf_show_custom(self, call: InlineCall, state_id: str):
         state = self._wf_page_cache.get(state_id)
         if not state:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         custom = self.get("workflows", {})
         if not custom:
             try:
@@ -20682,7 +24503,7 @@ class ComfyImageGenMod(loader.Module):
     async def _wf_show_cloud(self, call: InlineCall, state_id: str):
         state = self._wf_page_cache.get(state_id)
         if not state:
-            return
+            return await self._safe_call_answer(call, self._plain_text(self.strings("ult_state_expired")), show_alert=True)
         if not self._is_comfy_cloud():
             return await self._render_wf_main(call, state_id)
         state["workflows"] = list(self._CLOUD_WORKFLOWS)
@@ -20779,7 +24600,6 @@ class ComfyImageGenMod(loader.Module):
         is_cloud_workflow = self._is_cloud_workflow_name(wf_name)
         if is_cloud_workflow:
             self.config["comfyui_backend"] = _COMFY_BACKEND_CLOUD
-            self._set_cloud_model_as_workflow(True)
             self._comfy_cache.clear()
 
         if wf_name == current_wf and not is_cloud_workflow:
@@ -20789,6 +24609,7 @@ class ComfyImageGenMod(loader.Module):
         else:
             self.set("default_workflow", wf_name)
             self._set_workflow_limited_mode(False)
+            await self._autoswitch_model_to_workflow(wf_name)
             self._update_default_arg_values()
             limited_mode = False
             toast_key = "toast_wf_set"
@@ -20819,11 +24640,11 @@ class ComfyImageGenMod(loader.Module):
                 if wf_name in self._get_all_workflow_names():
                     if self._is_cloud_workflow_name(wf_name):
                         self.config["comfyui_backend"] = _COMFY_BACKEND_CLOUD
-                        self._set_cloud_model_as_workflow(True)
                         self._comfy_cache.clear()
                         limited_mode = False
                     self.set("default_workflow", wf_name)
                     self._set_workflow_limited_mode(limited_mode)
+                    await self._autoswitch_model_to_workflow(wf_name)
                     self._update_default_arg_values()
                     return await utils.answer(
                         message,
@@ -20961,43 +24782,83 @@ class ComfyImageGenMod(loader.Module):
         await self._edit_inline_status(call, text, reply_markup=None)
 
     @loader.command(
-        ru_doc=" [имя] [описание] [реплай на JSON] - Добавить воркфлоу",
+        ru_doc=" [имя] [описание] [ссылка Comfy Cloud или реплай на JSON] [-c] - Добавить воркфлоу; -c только проверить",
         aliases=["addworkflow"],
     )
     async def addwf(self, message: Message):
-        """ [name] [description] [reply to JSON] - Add workflow"""
+        """ [name] [description] [Comfy Cloud link or reply to JSON] [-c] - Add workflow; -c checks without saving"""
         args = utils.get_args_raw(message)
         if not args:
             return await utils.answer(message, self._apply_emoji_theme(self.strings("add_wf_no_name")))
 
-        parts = args.strip().split(maxsplit=1)
-        name = parts[0].strip().lower()
+        words = args.strip().split()
+        check_only = bool(words and (words[0] == "-c" or words[-1] == "-c"))
+        if check_only:
+            if words[0] == "-c":
+                words.pop(0)
+            if words and words[-1] == "-c":
+                words.pop()
+        parts = " ".join(words).split(maxsplit=1)
+        name = parts[0].strip().lower() if parts else await self._get_workflow_reply_name(message)
         description = parts[1].strip() if len(parts) > 1 else ""
+        if check_only and len(parts) == 1:
+            check_share_id, _ = self._extract_cloud_workflow_share(name)
+            if check_share_id:
+                description = name
+                name = check_share_id.lower()
 
-        if name == "i2i":
+        if not check_only and name == "i2i":
             return await utils.answer(message, self._apply_emoji_theme(self.strings("err_reserved_wf")))
 
         canonical_name = self._canonical_workflow_name(name)
-        if self._is_builtin_workflow(canonical_name):
+        if not check_only and self._is_builtin_workflow(canonical_name):
             return await utils.answer(
                 message, self.strings("add_wf_exists").format(utils.escape_html(canonical_name))
             )
 
         custom = self.get("workflows", {})
-        if name in custom:
+        if not check_only and name in custom:
             return await utils.answer(
                 message, self.strings("add_wf_exists").format(utils.escape_html(name))
             )
 
-        workflow_json, load_error = await self._load_workflow_json_from_reply(message)
-        if load_error == "no_reply":
-            return await utils.answer(message, self._apply_emoji_theme(self.strings("add_wf_no_reply")))
-        if load_error == "bad_json":
-            return await utils.answer(message, self._apply_emoji_theme(self.strings("add_wf_bad_json")))
-        if load_error == "too_large":
-            return await utils.answer(message, self._apply_emoji_theme(self.strings("wf_file_too_large")))
+        share_id, share_url = self._extract_cloud_workflow_share(description)
+        if "cloud.comfy.org" in description.lower() and not share_id:
+            return await utils.answer(
+                message,
+                self._apply_emoji_theme(self.strings("add_wf_cloud_share_bad")),
+            )
 
-        status = await utils.answer(
+        status = None
+        if share_id:
+            description = description.replace(share_url, "", 1).strip()
+            status = await utils.answer(
+                message,
+                self.strings("add_wf_cloud_share_loading"),
+            )
+            try:
+                workflow_json = await self._load_workflow_json_from_cloud_share(share_id)
+            except UserFacingError as e:
+                return await utils.answer(
+                    status,
+                    self._apply_emoji_theme(str(e)),
+                )
+            except Exception as e:
+                logger.debug("Cloud share workflow load failed: %s", e)
+                return await utils.answer(
+                    status,
+                    self._apply_emoji_theme(self.strings("add_wf_cloud_share_bad")),
+                )
+        else:
+            workflow_json, load_error = await self._load_workflow_json_from_reply(message)
+            if load_error == "no_reply":
+                return await utils.answer(message, self._apply_emoji_theme(self.strings("add_wf_no_reply")))
+            if load_error == "bad_json":
+                return await utils.answer(message, self._apply_emoji_theme(self.strings("add_wf_bad_json")))
+            if load_error == "too_large":
+                return await utils.answer(message, self._apply_emoji_theme(self.strings("wf_file_too_large")))
+
+        status = status or await utils.answer(
             message,
             self.strings("checkwf_checking").format(utils.escape_html(name)),
         )
@@ -21007,6 +24868,11 @@ class ComfyImageGenMod(loader.Module):
                 raise ValueError("Empty or invalid workflow")
 
             validation = await self._validate_workflow(workflow_json)
+            if check_only:
+                return await self._smart_answer(
+                    status,
+                    self._format_workflow_validation(name, validation),
+                )
             if not validation.get("ok"):
                 state_id = str(uuid.uuid4())
                 self._addwf_force_states[state_id] = {
@@ -21026,35 +24892,6 @@ class ComfyImageGenMod(loader.Module):
 
         except Exception as e:
             logger.error("Failed to add workflow: %s: %s", type(e).__name__, e)
-            logger.exception(e)
-            await utils.answer(status, self._apply_emoji_theme(self.strings("err_workflow_invalid")))
-
-    @loader.command(
-        ru_doc=" - Проверить JSON воркфлоу без сохранения",
-    )
-    async def checkwf(self, message: Message):
-        """ - Check workflow JSON without saving"""
-        workflow_name = await self._get_workflow_reply_name(message)
-        workflow_json, load_error = await self._load_workflow_json_from_reply(message)
-        if load_error == "no_reply":
-            return await utils.answer(message, self._apply_emoji_theme(self.strings("checkwf_no_reply")))
-        if load_error == "bad_json":
-            return await utils.answer(message, self._apply_emoji_theme(self.strings("checkwf_bad_json")))
-        if load_error == "too_large":
-            return await utils.answer(message, self._apply_emoji_theme(self.strings("wf_file_too_large")))
-
-        status = await utils.answer(
-            message,
-            self.strings("checkwf_checking").format(utils.escape_html(workflow_name)),
-        )
-
-        try:
-            validation = await self._validate_workflow(workflow_json)
-            await self._smart_answer(
-                status,
-                self._format_workflow_validation(workflow_name, validation),
-            )
-        except Exception as e:
             logger.exception(e)
             await utils.answer(status, self._apply_emoji_theme(self.strings("err_workflow_invalid")))
 
@@ -21115,5 +24952,8 @@ class ComfyImageGenMod(loader.Module):
     )
     async def setarg(self, message: Message):
         """ - Configure default generation arguments"""
+        await self._ensure_workflow_data(
+            self.get("default_workflow", _DEFAULT_WORKFLOW_NAME)
+        )
         self._sync_argset_for_current_model()
         await self._argset_render_main(message)
