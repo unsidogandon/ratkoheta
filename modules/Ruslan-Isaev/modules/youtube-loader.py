@@ -1,9 +1,9 @@
 # meta developer: @RUIS_VlP, @RoKrz
 # meta banner: https://raw.githubusercontent.com/Ruslan-Isaev/modules/refs/heads/main/photos/banner.jpg
 # meta pic: https://kappa.lol/21nHvy
-# requires: yt_dlp aiohttp aiofiles mutagen
+# requires: yt_dlp aiohttp aiofiles mutagen curl_cffi
 
-__version__ = (3, 4, 9)
+__version__ = (3, 5, 1)
 
 import yt_dlp
 import uuid
@@ -232,6 +232,7 @@ def extract_video_link(text):
         r"(https?://)?(www\.)?dailymotion\.com/video/[^\s]+",
         r"(https?://)?(www\.)?twitch\.tv/(videos/|clip/|[^/]+$)[^\s]*",
         r"(https?://)?(www\.)?streamable\.com/[^\s]+",
+        r"(https?://)?(www\.)?rule34video\.com/videos?/[^\s]+",
         r"(https?://)?(music\.)?yandex\.(ru|com|by|kz|ua)/album/[^\s]+",
         r"(https?://)?(music\.)?yandex\.(ru|com|by|kz|ua)/track/[^\s]+",
         r"(https?://)?(music\.)?yandex\.(ru|com|by|kz|ua)/(users/[^\s]+/)?playlists/[^\s]+",
@@ -258,6 +259,20 @@ def extract_video_link(text):
     match = re.search(general_url_pattern, text)
     if match:
         url = match.group(0)
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+
+        if host == "t.me" or host.endswith(".t.me"):
+            return None
+
+        if host == "raw.githubusercontent.com":
+            media_exts = (
+                '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp',
+                '.mp4', '.webm', '.mov', '.mkv', '.avi', '.m4v',
+            )
+            clean_url = url.split('?')[0].split('#')[0]
+            if not clean_url.lower().endswith(media_exts):
+                return None
+
         excluded_domains = [
             'google.com', 'yandex.ru', 'wikipedia.org', 'github.com',
             'stackoverflow.com', 'reddit.com/r/', 'amazon.com',
@@ -1163,7 +1178,7 @@ async function translateVideoUrl(videoUrl, responseLang, maxWaitSeconds) {
 }
 
 async function main() {
-  const [, , videoUrl, responseLang = "ru", maxWaitSeconds = "180"] = process.argv;
+  const [, , videoUrl, responseLang = "ru", maxWaitSeconds = "480"] = process.argv;
 
   if (!videoUrl) {
     console.log(JSON.stringify({ ok: false, error: "no_url" }));
@@ -1289,7 +1304,7 @@ async def ensure_node_version_ok(minimum=20):
         )
 
 
-async def get_translated_audio(video_url, response_lang="ru", max_wait_seconds=180, on_progress=None):
+async def get_translated_audio(video_url, response_lang="ru", max_wait_seconds=480, on_progress=None):
     script_path = await ensure_vot_bridge_ready()
 
     proc = await asyncio.create_subprocess_exec(
@@ -2483,6 +2498,7 @@ async def download_media(
 
     attempt = 0
     last_error = None
+    use_impersonate = False
 
     try:
         while attempt < max_attempts:
@@ -2570,6 +2586,13 @@ async def download_media(
                     if is_youtube and client:
                         ydl_opts['extractor_args'] = {'youtube': {'player_client': [client]}}
 
+                    if use_impersonate:
+                        ydl_opts['extractor_args'] = {
+                            **ydl_opts.get('extractor_args', {}),
+                            'generic': {'impersonate': ['']},
+                        }
+                        ydl_opts['impersonate'] = ''
+
                     ydl_opts['progress_hooks'] = [progress_hook]
 
                     def _extract_and_download(ydl_opts=ydl_opts):
@@ -2646,6 +2669,13 @@ async def download_media(
 
                         if "Unsupported URL" in error_str or "is not a valid URL" in error_str:
                             raise Exception("Эта ссылка не поддерживается yt-dlp")
+
+                        if not use_impersonate and (
+                            "cloudflare" in error_str.lower()
+                            or "403" in error_str
+                            or "impersonate" in error_str.lower()
+                        ):
+                            use_impersonate = True
 
                         await asyncio.sleep(2)
                         continue
@@ -2746,7 +2776,7 @@ def convert_markdown_to_html(template: str, link: str) -> str:
 class YouTube_DLDMod(loader.Module):
     """Помогает скачивать видео с YouTube, TikTok и др. SponsorBlock вырезает рекламу, -s/-e берут только отрезок."""
 
-    __version__ = (3, 4, 10)
+    __version__ = (3, 5, 1)
 
     strings = {
         "name": "YouTube-DLD",
@@ -3538,19 +3568,44 @@ Full list of supported sites — <a href="https://github.com/yt-dlp/yt-dlp/blob/
 
     @staticmethod
     def _normalize_chat_id(cid):
-        s = str(cid)
+        s = str(cid).strip()
         if s.startswith("-100"):
             return int(s[4:])
+        if s.startswith("-") and s[1:].isdigit():
+            return int(s[1:])
         return cid
 
     @staticmethod
-    async def _resolve_whitelist_entity(client, cid):
-        for candidate in (cid, int(f"-100{cid}"), -cid if cid > 0 else cid):
+    async def _resolve_whitelist_entity(client, cid, first=None):
+        candidates = [cid, int(f"-100{cid}"), -cid if cid > 0 else cid]
+        if first is not None:
+            candidates.insert(0, first)
+        for candidate in candidates:
             try:
                 return await client.get_entity(candidate)
             except Exception:
                 continue
         return None
+
+    @staticmethod
+    async def _format_chat_ref(client, cid, entity=None):
+        if entity is None:
+            entity = await YouTube_DLDMod._resolve_whitelist_entity(client, cid)
+        if entity is None:
+            return f"<code>{cid}</code>"
+
+        name = tl_utils.get_display_name(entity) or str(cid)
+        username = getattr(entity, "username", None)
+        if isinstance(entity, tl_types.User):
+            link_url = f"tg://user?id={entity.id}"
+        elif username:
+            link_url = f"https://t.me/{username}"
+        elif isinstance(entity, tl_types.Channel):
+            link_url = f"https://t.me/c/{entity.id}"
+        else:
+            return f"<b>{name}</b> (<code>{cid}</code>)"
+
+        return f'<a href="{link_url}">{name}</a> (<code>{cid}</code>)'
 
     @loader.command()
     async def dlwl(self, message):
@@ -3590,11 +3645,19 @@ Full list of supported sites — <a href="https://github.com/yt-dlp/yt-dlp/blob/
 
         if args_raw:
             try:
-                entity = await message.client.get_entity(args_raw)
+                if re.fullmatch(r"-?\d+", args_raw):
+                    typed_id = int(args_raw)
+                    entity = await self._resolve_whitelist_entity(
+                        message.client, self._normalize_chat_id(typed_id), first=typed_id
+                    )
+                    if entity is None:
+                        raise ValueError(args_raw)
+                else:
+                    entity = await message.client.get_entity(args_raw)
                 raw_chat_id = await message.client.get_peer_id(entity)
                 chat_id = self._normalize_chat_id(raw_chat_id)
             except Exception:
-                await utils.answer(message, f"❌ Не нашла чат/пользователя по «{args_raw}».")
+                await utils.answer(message, f"❌ Не найден чат/пользователь по «{args_raw}».")
                 return
             target_name = tl_utils.get_display_name(entity) or str(raw_chat_id)
         else:
@@ -4576,7 +4639,9 @@ Full list of supported sites — <a href="https://github.com/yt-dlp/yt-dlp/blob/
                 source_lang_norm = (source_lang or "").split("-")[0].strip().lower()
 
                 if source_lang_norm and source_lang_norm == vo_lang:
-                    pass
+                    logger.info(
+                        f"VOT translation skipped: source_lang={source_lang!r} already matches vo_lang={vo_lang!r} for {link}"
+                    )
                 else:
                     vo_attempts = 2
                     vo_err = None
@@ -4787,9 +4852,10 @@ Full list of supported sites — <a href="https://github.com/yt-dlp/yt-dlp/blob/
                         log_channel_id = logging.getLogger().handlers[0].get_logid_by_client(message.client.tg_id)
                         log_topic_id = None
 
+                    chat_ref = await self._format_chat_ref(message.client, message.chat_id, entity=message.chat)
                     log_text = (
                         f"{EMOJI_WARN} <b>YouTube-DLD: автозагрузка не смогла скачать ссылку</b>\n\n"
-                        f"Чат: <code>{message.chat_id}</code>\n"
+                        f"Чат: {chat_ref}\n"
                         f"Ссылка: <code>{link}</code>\n\n"
                         f"<code>{clean_error_text(e)}</code>"
                     )
